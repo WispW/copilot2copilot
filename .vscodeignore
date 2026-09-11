@@ -6,3 +6,5 @@ esbuild.mjs
 tsconfig.json
 .gitignore
 **/*.map
+# 图标加工用的位图源文件（不打进扩展包）
+111.png

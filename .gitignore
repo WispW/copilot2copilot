@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.vsix
 .vscode-test/
+# 图标加工用的位图源文件（不入库）
+111.png
