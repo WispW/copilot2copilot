@@ -2,7 +2,7 @@
   "name": "talk2copilot",
   "displayName": "Talk2Copilot",
   "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 直接沟通（局域网 / 中继双模式）",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "publisher": "qq341",
   "private": true,
   "license": "MIT",
@@ -14,7 +14,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:talk2copilot.console"
   ],
   "contributes": {
     "commands": [

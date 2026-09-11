@@ -77,11 +77,15 @@ function normalize(raw: Partial<AppConfig>): AppConfig {
   };
 }
 
+/** 工作区级档案覆盖（未设置的项回落全局默认） */
+export type WorkspaceIdentity = { id?: string; role?: string; scope?: string };
+
 export class Store {
   private readonly configPath: string;
   private readonly historyPath: string;
   private cfg: AppConfig;
   private items: HistoryItem[] = [];
+  private wsIdentity: WorkspaceIdentity = {};
 
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
@@ -93,6 +97,7 @@ export class Store {
     this.historyPath = path.join(dir, 'history.json');
     this.cfg = this.readConfig();
     this.items = this.readHistory();
+    this.wsIdentity = context.workspaceState.get<WorkspaceIdentity>('talk2copilot.identity') ?? {};
   }
 
   private readConfig(): AppConfig {
@@ -112,8 +117,46 @@ export class Store {
     }
   }
 
+  /** 对外配置：identity 为当前生效档案（已合并工作区覆盖） */
   get config(): AppConfig {
-    return this.cfg;
+    return { ...this.cfg, identity: this.identity };
+  }
+
+  /** 全局默认档案（界面在“未启用独立档案”时编辑它） */
+  get defaultIdentity(): ColleagueProfile {
+    return this.cfg.identity;
+  }
+
+  /** 当前生效档案：工作区覆盖 > 全局默认 */
+  get identity(): ColleagueProfile {
+    const base = this.cfg.identity;
+    return {
+      id: this.wsIdentity.id?.trim() || base.id,
+      role: this.wsIdentity.role ?? base.role,
+      scope: this.wsIdentity.scope ?? base.scope,
+    };
+  }
+
+  /** 当前工作区已设置的覆盖项（供界面回显） */
+  get workspaceIdentity(): WorkspaceIdentity {
+    return this.wsIdentity;
+  }
+
+  /** 当前工作区名（无工作区时为空串） */
+  workspaceLabel(): string {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return '';
+    }
+    return folders.length === 1 ? folders[0].name : `${folders[0].name} 等 ${folders.length} 个工作区`;
+  }
+
+  /** 设置或清除当前工作区的独立档案 */
+  async setWorkspaceIdentity(next: WorkspaceIdentity | undefined): Promise<void> {
+    const normalized = next && (next.id?.trim() || next.role?.trim() || next.scope?.trim()) ? next : undefined;
+    this.wsIdentity = normalized ?? {};
+    await this.context.workspaceState.update('talk2copilot.identity', normalized);
+    this.changeEmitter.fire();
   }
 
   /** 按 id 或中继 id 找沟通方；未指定 id 且只有一位时返回唯一那位 */
@@ -148,9 +191,9 @@ export class Store {
     return true;
   }
 
-  /** 我的档案缺失的字段名（用于界面提示与通信前校验） */
+  /** 我的档案缺失的字段名（用于界面提示与通信前校验，按当前生效档案判断） */
   missingIdentityFields(): string[] {
-    const { id, role, scope } = this.cfg.identity;
+    const { id, role, scope } = this.identity;
     const missing: string[] = [];
     if (!id.trim()) {
       missing.push('id');
