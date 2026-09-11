@@ -1,0 +1,56 @@
+import * as vscode from 'vscode';
+import { Store } from './store';
+import { TransportStatus } from './transport/types';
+
+/** 左下角状态栏入口：显示连接状态与未读角标，点击打开主界面 */
+export class StatusBar {
+  private readonly item: vscode.StatusBarItem;
+
+  constructor(private readonly store: Store) {
+    this.item = vscode.window.createStatusBarItem('talk2copilot.status', vscode.StatusBarAlignment.Left, 1000);
+    this.item.name = 'Talk2Copilot';
+    this.item.command = 'talk2copilot.openConsole';
+    this.item.show();
+    this.update({ state: 'stopped', detail: '未启动' });
+  }
+
+  update(status: TransportStatus): void {
+    const unread = this.store.listMessages(200).filter(m => m.direction === 'in' && !m.done).length;
+    const badge = unread > 0 ? ` ${unread}` : '';
+    const missing = this.store.missingIdentityFields();
+
+    if (missing.length > 0) {
+      this.item.text = `$(warning) talk2copilot${badge}`;
+      this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else {
+      this.item.backgroundColor = undefined;
+      switch (status.state) {
+        case 'online':
+          this.item.text = `$(comment-discussion) talk2copilot${badge}`;
+          break;
+        case 'connecting':
+          this.item.text = '$(sync~spin) talk2copilot';
+          break;
+        case 'offline':
+          this.item.text = `$(warning) talk2copilot${badge}`;
+          break;
+        default:
+          this.item.text = '$(circle-slash) talk2copilot';
+      }
+    }
+
+    const lines = [status.detail, `模式：${this.store.config.mode === 'relay' ? '中继' : '局域网'}`];
+    if (unread > 0) {
+      lines.push(`未回复消息：${unread} 条`);
+    }
+    if (missing.length > 0) {
+      lines.push(`注意：请先完善“我的档案”（缺少：${missing.join('、')}），未完成前无法与同事通信`);
+    }
+    lines.push('点击打开配置界面');
+    this.item.tooltip = new vscode.MarkdownString(lines.join('\n\n'));
+  }
+
+  dispose(): void {
+    this.item.dispose();
+  }
+}

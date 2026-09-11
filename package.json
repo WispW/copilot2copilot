@@ -1,0 +1,185 @@
+{
+  "name": "talk2copilot",
+  "displayName": "Talk2Copilot",
+  "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 直接沟通（局域网 / 中继双模式）",
+  "version": "0.1.9",
+  "publisher": "qq341",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "talk2copilot.openConsole",
+        "title": "打开配置界面",
+        "category": "Talk2Copilot"
+      },
+      {
+        "command": "talk2copilot.testConnection",
+        "title": "测试连接",
+        "category": "Talk2Copilot"
+      },
+      {
+        "command": "talk2copilot.showLogs",
+        "title": "查看日志",
+        "category": "Talk2Copilot"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "talk2copilot_list_colleagues",
+        "displayName": "查看沟通方列表",
+        "modelDescription": "列出已配置的沟通方（同事），返回每位同事的 id、姓名、角色、负责内容与在线状态。当你不确定某个问题应该问谁时，先调用此工具查看名单，再调用 talk2copilot_send_message 发送。不需要参数。",
+        "userDescription": "列出已配置的沟通方及其分工",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "list_colleagues",
+        "icon": "$(organization)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "name": "talk2copilot_send_message",
+        "displayName": "向同事发消息",
+        "modelDescription": "向一位同事发送消息，由对方的 Copilot 接收并处理。用于询问只有对方掌握的代码细节（如对方负责模块的实现、接口约定、设计意图），可附带一段相关代码片段作为上下文。发送后返回 request_id；若设置了 wait_seconds 则在该时长内等待对方回复，超时返回 pending 状态，可之后用 talk2copilot_wait_reply 继续等待。不确定发给谁时先调用 talk2copilot_list_colleagues。",
+        "userDescription": "向同事发送消息并（可选）等待回复",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "send_message",
+        "icon": "$(send)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "description": "目标同事的 id（来自 talk2copilot_list_colleagues）。仅配置了一位沟通方时可省略。"
+            },
+            "message": {
+              "type": "string",
+              "description": "消息正文：用自然语言写清要问什么或要告知什么，是发给同事（其 Copilot 会阅读）的内容。"
+            },
+            "snippet": {
+              "type": "string",
+              "description": "可选：相关的代码片段原文，为对方理解问题提供上下文。"
+            },
+            "snippet_language": {
+              "type": "string",
+              "description": "可选：代码片段的语言标识，如 typescript、python。"
+            },
+            "wait_seconds": {
+              "type": "number",
+              "description": "可选：等待对方回复的秒数（0 或缺省表示不等待，立即返回 request_id；建议 ≤ 120）。"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      },
+      {
+        "name": "talk2copilot_wait_reply",
+        "displayName": "等待同事回复",
+        "modelDescription": "等待某条已发送消息（request_id）的回复。适用于之前发送时未拿到回复（状态为 pending）的情况。返回状态 ok（含回复正文）或 pending（超时，可再次调用或放弃）。",
+        "userDescription": "等待指定消息的回复",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "wait_reply",
+        "icon": "$(watch)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "发送消息时返回的 request_id。"
+            },
+            "timeout_seconds": {
+              "type": "number",
+              "description": "本次等待的秒数，缺省使用配置中的默认值。"
+            }
+          },
+          "required": [
+            "request_id"
+          ]
+        }
+      },
+      {
+        "name": "talk2copilot_reply_message",
+        "displayName": "回复同事消息",
+        "modelDescription": "回复一位同事发来的消息。当你收到包含 request_id 的同事消息（通常以注入形式出现在对话中），请理解问题并调用此工具回复；回复内容应当直接、准确，必要时引用本仓库中的代码事实。",
+        "userDescription": "回复收到的同事消息",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "reply_message",
+        "icon": "$(reply)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "request_id": {
+              "type": "string",
+              "description": "同事消息中携带的 request_id。"
+            },
+            "message": {
+              "type": "string",
+              "description": "回复正文。"
+            },
+            "snippet": {
+              "type": "string",
+              "description": "可选：附带的代码片段原文。"
+            },
+            "snippet_language": {
+              "type": "string",
+              "description": "可选：代码片段的语言标识。"
+            }
+          },
+          "required": [
+            "request_id",
+            "message"
+          ]
+        }
+      },
+      {
+        "name": "talk2copilot_list_inbox",
+        "displayName": "查看收件箱",
+        "modelDescription": "查看收到的同事消息列表（含已回复/未回复状态与时间）。用于确认是否有未处理的消息，或在错过通知后找回消息内容（含 request_id）。",
+        "userDescription": "查看收件箱中的消息",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "list_inbox",
+        "icon": "$(inbox)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "unread_only": {
+              "type": "boolean",
+              "description": "为 true 时只返回未读/未回复的消息。"
+            }
+          },
+          "required": []
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "vsix": "npm run build && npx @vscode/vsce package --no-dependencies --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.104.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
