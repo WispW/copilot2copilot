@@ -5,6 +5,10 @@ const vscode = acquireVsCodeApi();
 let state = null;
 /** @type {any} */
 let draft = null;
+/** 当前工作区档案（label 为空表示未打开工作区） */
+let wsState = { label: '', identity: {} };
+/** 是否为本工作区保存独立档案 */
+let wsOverride = false;
 
 const missingIds = new Set();
 
@@ -36,12 +40,25 @@ window.addEventListener('message', event => {
     state = msg.state;
     if (!draft || msg.resetDraft) {
       draft = JSON.parse(JSON.stringify(state.config));
+      wsState = {
+        label: state.workspaceLabel || '',
+        identity: JSON.parse(JSON.stringify(state.workspaceIdentity || {})),
+      };
+      wsOverride = Boolean(wsState.identity.id || wsState.identity.role || wsState.identity.scope);
       render();
     } else {
       syncReadonlyFields();
+      if (state.workspaceLabel) {
+        wsState.label = state.workspaceLabel;
+      }
       renderStatus();
       renderInbox();
       renderOnline();
+      // 热刷新时重绘档案区，但避免打断正在输入的内容
+      const focused = document.activeElement;
+      if (!focused || (focused.tagName !== 'INPUT' && focused.tagName !== 'SELECT')) {
+        renderConn();
+      }
     }
   }
 });
@@ -104,9 +121,22 @@ function renderConn() {
   $('lan-port').value = cfg.lan.listenPort;
   $('relay-url').value = cfg.relay.url;
   $('relay-myid').value = cfg.relay.myPeerId;
-  $('id-id').value = cfg.identity.id;
-  $('id-role').value = cfg.identity.role;
-  $('id-scope').value = cfg.identity.scope;
+
+  // 我的档案：默认档案 或 当前工作区独立档案
+  const hasWorkspace = Boolean(wsState.label);
+  const overrideEl = $('ws-override');
+  overrideEl.disabled = !hasWorkspace;
+  overrideEl.checked = wsOverride && hasWorkspace;
+  $('ws-label').textContent = hasWorkspace ? wsState.label : '（未打开工作区，使用默认档案）';
+  const src = wsOverride && hasWorkspace ? (wsState.identity || {}) : cfg.identity;
+  const fallback = cfg.identity;
+  $('id-id').value = src.id ?? fallback.id ?? '';
+  $('id-role').value = src.role ?? fallback.role ?? '';
+  $('id-scope').value = src.scope ?? fallback.scope ?? '';
+  $('identity-hint').textContent = wsOverride && hasWorkspace
+    ? '正在编辑该工作区的独立档案；留空的项会继承默认档案'
+    : '正在编辑默认档案（所有未设置独立档案的工作区共用）';
+
   $('my-addrs').textContent = (state.myAddresses || []).join('  ');
   const missing = state.identityMissing || [];
   const warn = $('identity-warning');
@@ -114,6 +144,11 @@ function renderConn() {
   if (missing.length > 0) {
     warn.textContent = `请先完善“我的档案”：缺少 ${missing.join('、')}，未完成前无法与同事通信。`;
   }
+}
+
+/** 当前编辑目标：工作区独立档案 或 默认档案 */
+function identityTarget() {
+  return wsOverride && wsState.label ? wsState.identity : draft.identity;
 }
 
 function renderBehavior() {
@@ -223,7 +258,14 @@ function renderInbox() {
 }
 
 $('btn-save').addEventListener('click', () => {
-  vscode.postMessage({ type: 'save', config: draft, token: $('token').value });
+  const useWorkspace = wsOverride && Boolean(wsState.label);
+  vscode.postMessage({
+    type: 'save',
+    config: draft,
+    identity: useWorkspace ? wsState.identity : undefined,
+    workspaceOverride: useWorkspace,
+    token: $('token').value,
+  });
   $('token').value = '';
 });
 
@@ -276,13 +318,20 @@ $('relay-myid').addEventListener('input', () => {
   draft.relay.myPeerId = $('relay-myid').value.trim();
 });
 $('id-id').addEventListener('input', () => {
-  draft.identity.id = $('id-id').value.trim();
+  identityTarget().id = $('id-id').value.trim();
 });
 $('id-role').addEventListener('input', () => {
-  draft.identity.role = $('id-role').value.trim();
+  identityTarget().role = $('id-role').value.trim();
 });
 $('id-scope').addEventListener('input', () => {
-  draft.identity.scope = $('id-scope').value.trim();
+  identityTarget().scope = $('id-scope').value.trim();
+});
+$('ws-override').addEventListener('change', () => {
+  wsOverride = $('ws-override').checked;
+  if (wsOverride && wsState.label && !wsState.identity) {
+    wsState.identity = {};
+  }
+  renderConn();
 });
 $('wait-timeout').addEventListener('input', () => {
   draft.behavior.waitTimeoutSec = Number($('wait-timeout').value) || 90;
