@@ -215,7 +215,7 @@ export class ConsolePanel {
   </section>
   <section id="tab-behavior" hidden>
     <h2>收发行为</h2>
-    <label class="row"><input id="auto-inject" type="checkbox"> 收到消息后自动交给本机 Copilot 处理（默认仅通知，手动确认）</label>
+    <p class="hint">收到同事的消息或回复时，会直接触发本机 Copilot 对话进行处理（不再弹出通知）。</p>
     <label>等待回复默认超时（秒） <input id="wait-timeout" type="number" min="5" max="180"></label>
     <label>历史消息保留条数 <input id="history-limit" type="number" min="20" max="1000"></label>
     <div class="section-head"><h2>维护</h2></div>

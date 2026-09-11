@@ -22,7 +22,7 @@ export interface AppConfig {
   identity: ColleagueProfile;
   lan: { listenPort: number };
   relay: { url: string; myPeerId: string };
-  behavior: { autoInject: boolean; waitTimeoutSec: number; historyLimit: number };
+  behavior: { waitTimeoutSec: number; historyLimit: number };
   colleagues: ColleagueConfig[];
 }
 
@@ -47,7 +47,7 @@ function defaultConfig(): AppConfig {
     identity: { id: user, role: '', scope: '' },
     lan: { listenPort: 3901 },
     relay: { url: '', myPeerId: user },
-    behavior: { autoInject: false, waitTimeoutSec: 90, historyLimit: 200 },
+    behavior: { waitTimeoutSec: 90, historyLimit: 200 },
     colleagues: [],
   };
 }

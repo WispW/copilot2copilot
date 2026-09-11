@@ -6,7 +6,10 @@ import { TransportStatus } from './transport/types';
 export class StatusBar {
   private readonly item: vscode.StatusBarItem;
 
-  constructor(private readonly store: Store) {
+  constructor(
+    private readonly store: Store,
+    private readonly getOnlineIds: () => string[],
+  ) {
     this.item = vscode.window.createStatusBarItem('talk2copilot.status', vscode.StatusBarAlignment.Left, 1000);
     this.item.name = 'Talk2Copilot';
     this.item.command = 'talk2copilot.openConsole';
@@ -18,6 +21,8 @@ export class StatusBar {
     const unread = this.store.listMessages(200).filter(m => m.direction === 'in' && !m.done).length;
     const badge = unread > 0 ? ` ${unread}` : '';
     const missing = this.store.missingIdentityFields();
+    const total = this.store.config.colleagues.length;
+    const online = this.getOnlineIds().length;
 
     if (missing.length > 0) {
       this.item.text = `$(warning) talk2copilot${badge}`;
@@ -39,7 +44,10 @@ export class StatusBar {
       }
     }
 
-    const lines = [status.detail, `模式：${this.store.config.mode === 'relay' ? '中继' : '局域网'}`];
+    const lines = [
+      `${status.detail}${total > 0 ? ` · ${online}/${total} 同事在线` : ''}`,
+      `模式：${this.store.config.mode === 'relay' ? '中继' : '局域网'}`,
+    ];
     if (unread > 0) {
       lines.push(`未回复消息：${unread} 条`);
     }

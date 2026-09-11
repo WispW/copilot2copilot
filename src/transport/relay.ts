@@ -23,6 +23,8 @@ export class RelayTransport implements Transport {
   private onlinePeers = new Set<string>();
   /** 本次连接中已向哪些同事声明过自己的档案（避免重复与回环） */
   private readonly helloSent = new Set<string>();
+  /** 已明确通告下线的同事（收到其任何消息后恢复在线） */
+  private readonly offlinePeers = new Set<string>();
 
   constructor(private readonly store: Store) {}
 
@@ -72,11 +74,23 @@ export class RelayTransport implements Transport {
   }
 
   isOnline(peerId: string): boolean {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
+    if (this.ws?.readyState !== WebSocket.OPEN || this.offlinePeers.has(peerId)) {
       return false;
     }
     const colleague = this.store.config.colleagues.find(c => c.id === peerId);
     return this.onlinePeers.has(colleague?.relayPeerId || peerId);
+  }
+
+  /** 退出前尽力向所有沟通方发出下线通告（复用中继连接，不等待） */
+  sendOfflineNotice(): void {
+    const identity = this.store.config.identity;
+    for (const c of this.store.config.colleagues) {
+      if (!c.relayPeerId) {
+        continue;
+      }
+      void this.send(makeEnvelope({ kind: 'offline', from: this.myRelayId(), to: c.id, profile: identity }));
+      log(`[relay] 已向 ${c.id} 发出下线通告`);
+    }
   }
 
   /** 中继模式下“连接某位同事”等价于确保与中继服务器的连接 */
@@ -174,6 +188,16 @@ export class RelayTransport implements Transport {
       this.refreshPresenceStatus();
       return;
     }
+    if (parsed.kind === 'offline') {
+      this.offlinePeers.add(parsed.from);
+      log(`[relay] 同事 ${parsed.from} 已通告下线`);
+      this.refreshPresenceStatus();
+      return;
+    }
+    if (this.offlinePeers.delete(parsed.from)) {
+      log(`[relay] 同事 ${parsed.from} 恢复在线`);
+      this.refreshPresenceStatus();
+    }
     log(`[relay] 收到 ${parsed.kind} from=${parsed.from}（消息 ${parsed.id}）`);
     if (parsed.profile) {
       void this.store.applyPeerProfile(parsed.profile, parsed.from).then(changed => {
@@ -191,8 +215,6 @@ export class RelayTransport implements Transport {
   }
 
   private refreshPresenceStatus(): void {
-    const total = this.store.config.colleagues.length;
-    const online = this.store.config.colleagues.filter(c => this.onlinePeers.has(c.relayPeerId)).length;
-    this.statusEmitter.fire({ state: 'online', detail: `已连接中继服务器 · ${online}/${total} 同事在线` });
+    this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
   }
 }

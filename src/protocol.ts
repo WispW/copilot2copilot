@@ -12,7 +12,7 @@ export interface ColleagueProfile {
   scope: string;
 }
 
-export type MessageKind = 'hello' | 'message' | 'reply' | 'presence';
+export type MessageKind = 'hello' | 'message' | 'reply' | 'presence' | 'offline';
 
 export interface MessageEnvelope {
   v: number;
@@ -57,5 +57,5 @@ export function isEnvelope(value: unknown): value is MessageEnvelope {
   }
   const e = value as Partial<MessageEnvelope>;
   return typeof e.id === 'string' && typeof e.from === 'string' && typeof e.to === 'string'
-    && (e.kind === 'hello' || e.kind === 'message' || e.kind === 'reply' || e.kind === 'presence');
+    && (e.kind === 'hello' || e.kind === 'message' || e.kind === 'reply' || e.kind === 'presence' || e.kind === 'offline');
 }

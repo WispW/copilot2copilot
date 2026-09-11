@@ -20,4 +20,6 @@ export interface Transport {
   connectPeer(peerId: string): void;
   /** 某个同事当前是否可达 */
   isOnline(peerId: string): boolean;
+  /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */
+  sendOfflineNotice(): void;
 }

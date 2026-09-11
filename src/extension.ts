@@ -15,11 +15,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log('扩展已激活');
   const store = new Store(context);
   const waiters = new ReplyWaiter();
-  const injector = new Injector(store, waiters);
+  const injector = new Injector(store, waiters, context.extensionUri);
   let status: TransportStatus = { state: 'stopped', detail: '未启动' };
   let transportDisposables: vscode.Disposable[] = [];
 
-  const statusBar = new StatusBar(store);
+  /** 在线同事 id：状态栏与面板共用的实时数据源 */
+  const getOnlineIds = (): string[] =>
+    store.config.colleagues.filter(c => currentTransport?.isOnline(c.id)).map(c => c.id);
+
+  const statusBar = new StatusBar(store, getOnlineIds);
   context.subscriptions.push(statusBar);
 
   const restart = async (): Promise<void> => {
@@ -49,7 +53,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const panel = new ConsolePanel(context, store, {
     getStatus: () => status,
-    getOnlineIds: () => store.config.colleagues.filter(c => currentTransport?.isOnline(c.id)).map(c => c.id),
+    getOnlineIds,
     restart,
     connectPeer: peerId => currentTransport?.connectPeer(peerId),
   });
@@ -81,7 +85,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {
-  log('扩展已停用');
+  log('扩展已停用，向沟通方发出下线通告');
+  currentTransport?.sendOfflineNotice();
   void currentTransport?.stop();
   currentTransport = undefined;
   disposeLogger();

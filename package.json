@@ -2,7 +2,7 @@
   "name": "talk2copilot",
   "displayName": "Talk2Copilot",
   "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 直接沟通（局域网 / 中继双模式）",
-  "version": "0.1.9",
+  "version": "0.3.1",
   "publisher": "qq341",
   "private": true,
   "license": "MIT",
@@ -52,7 +52,7 @@
       {
         "name": "talk2copilot_send_message",
         "displayName": "向同事发消息",
-        "modelDescription": "向一位同事发送消息，由对方的 Copilot 接收并处理。用于询问只有对方掌握的代码细节（如对方负责模块的实现、接口约定、设计意图），可附带一段相关代码片段作为上下文。发送后返回 request_id；若设置了 wait_seconds 则在该时长内等待对方回复，超时返回 pending 状态，可之后用 talk2copilot_wait_reply 继续等待。不确定发给谁时先调用 talk2copilot_list_colleagues。",
+        "modelDescription": "向一位同事发送消息，由对方的 Copilot 以信息形式回复，并默认等待对方回复后再返回结果（同步问答）。用于询问只有对方掌握的代码细节或环境情况（对方负责模块的实现、接口约定、设计意图、运行与资源状态等），可附带一段相关代码片段作为上下文。通信约定：本通道只做信息交换——可以请对方回答信息、阅读代码、执行只读查询（获取信息）；不得要求对方修改代码、文件、配置，或执行有副作用的操作（写入、安装、部署、重启等）。如用户要求你让对方改代码，应说明该通道不支持，改为询问信息。返回 status=ok 时结果中含对方回复；若返回 pending（等待超时），应继续调用 talk2copilot_wait_reply 直到拿到回复，不要就此断言对方未答复；显式传 wait_seconds=0 才会不等待。不确定发给谁时先调用 talk2copilot_list_colleagues。",
         "userDescription": "向同事发送消息并（可选）等待回复",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "send_message",
@@ -78,7 +78,7 @@
             },
             "wait_seconds": {
               "type": "number",
-              "description": "可选：等待对方回复的秒数（0 或缺省表示不等待，立即返回 request_id；建议 ≤ 120）。"
+              "description": "可选：等待对方回复的秒数。缺省时使用配置中的「等待回复默认超时」（默认 90 秒）；显式传 0 表示不等待、立即返回 request_id。"
             }
           },
           "required": [
@@ -114,7 +114,7 @@
       {
         "name": "talk2copilot_reply_message",
         "displayName": "回复同事消息",
-        "modelDescription": "回复一位同事发来的消息。当你收到包含 request_id 的同事消息（通常以注入形式出现在对话中），请理解问题并调用此工具回复；回复内容应当直接、准确，必要时引用本仓库中的代码事实。",
+        "modelDescription": "回复一位同事发来的消息。当你收到包含 request_id 的同事消息（通常以注入形式出现在对话中），请理解问题并调用此工具回复。回复只能提供信息（答案、说明、代码事实引用，或只读查询得到的结果）；不得借回复要求或促使对方修改其代码、文件、配置，或执行有副作用的操作。",
         "userDescription": "回复收到的同事消息",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "reply_message",
