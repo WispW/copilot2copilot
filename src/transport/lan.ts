@@ -28,6 +28,8 @@ export class LanTransport implements Transport {
   private readonly inbound = new Map<string, WebSocket>();
   /** 本次连接中已向哪些同事声明过自己的档案（避免重复与回环） */
   private readonly helloSent = new Set<string>();
+  /** 已明确通告下线的同事（收到其任何消息后恢复在线） */
+  private readonly offlinePeers = new Set<string>();
   private running = false;
 
   constructor(private readonly store: Store) {}
@@ -84,7 +86,25 @@ export class LanTransport implements Transport {
     return Promise.resolve();
   }
 
+  /** 退出前尽力向所有沟通方发出下线通告（复用现有连接，不新建、不等待） */
+  sendOfflineNotice(): void {
+    const identity = this.store.config.identity;
+    for (const c of this.store.config.colleagues) {
+      const outbound = this.links.get(c.id)?.ws;
+      const inbound = this.inbound.get(c.id);
+      const ws = outbound?.readyState === WebSocket.OPEN ? outbound : inbound;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      ws.send(JSON.stringify(makeEnvelope({ kind: 'offline', from: identity.id, to: c.id, profile: identity })));
+      log(`[lan] 已向 ${c.id} 发出下线通告`);
+    }
+  }
+
   isOnline(peerId: string): boolean {
+    if (this.offlinePeers.has(peerId)) {
+      return false;
+    }
     const outbound = this.links.get(peerId)?.ws?.readyState === WebSocket.OPEN;
     const inbound = this.inbound.get(peerId)?.readyState === WebSocket.OPEN;
     return Boolean(outbound || inbound);
@@ -259,6 +279,16 @@ export class LanTransport implements Transport {
     if (!isEnvelope(parsed) || parsed.kind === 'presence') {
       return;
     }
+    if (parsed.kind === 'offline') {
+      this.offlinePeers.add(parsed.from);
+      log(`[lan] 同事 ${parsed.from} 已通告下线`);
+      this.reportStatus();
+      return;
+    }
+    if (this.offlinePeers.delete(parsed.from)) {
+      log(`[lan] 同事 ${parsed.from} 恢复在线`);
+      this.reportStatus();
+    }
     log(`[lan] 收到 ${parsed.kind} from=${parsed.from}（消息 ${parsed.id}）`);
     if (parsed.profile) {
       void this.store.applyPeerProfile(parsed.profile, parsed.from, inboundAddr).then(changed => {
@@ -277,9 +307,7 @@ export class LanTransport implements Transport {
   }
 
   private reportStatus(): void {
-    const total = this.store.config.colleagues.length;
-    const online = this.store.config.colleagues.filter(c => this.isOnline(c.id)).length;
     const state: ConnState = this.running ? 'online' : 'stopped';
-    this.statusEmitter.fire({ state, detail: `局域网监听中 · ${online}/${total} 同事在线` });
+    this.statusEmitter.fire({ state, detail: '局域网监听中' });
   }
 }

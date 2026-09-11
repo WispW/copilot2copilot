@@ -117,7 +117,6 @@ function renderConn() {
 }
 
 function renderBehavior() {
-  $('auto-inject').checked = Boolean(draft.behavior.autoInject);
   $('wait-timeout').value = draft.behavior.waitTimeoutSec;
   $('history-limit').value = draft.behavior.historyLimit;
 }
@@ -167,6 +166,13 @@ function renderPeers() {
       vscode.postMessage({ type: 'connectPeer', peerId: draft.colleagues[i].id });
       btn.textContent = '连接中…';
       btn.disabled = true;
+      // 状态推送不一定每次都触发重绘，这里兜底恢复按钮
+      setTimeout(() => {
+        if (btn.isConnected) {
+          btn.textContent = '连接';
+          btn.disabled = false;
+        }
+      }, 3000);
     });
     el.appendChild(div);
   });
@@ -277,9 +283,6 @@ $('id-role').addEventListener('input', () => {
 });
 $('id-scope').addEventListener('input', () => {
   draft.identity.scope = $('id-scope').value.trim();
-});
-$('auto-inject').addEventListener('change', () => {
-  draft.behavior.autoInject = $('auto-inject').checked;
 });
 $('wait-timeout').addEventListener('input', () => {
   draft.behavior.waitTimeoutSec = Number($('wait-timeout').value) || 90;

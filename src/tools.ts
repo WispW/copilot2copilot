@@ -85,7 +85,9 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       invocationMessage: `正在向 ${colleague?.id ?? '沟通方'} 发送消息`,
       confirmationMessages: {
         title: '向同事发送消息',
-        message: new vscode.MarkdownString(`将以下内容发送给 **${target}**：\n\n---\n\n${body}${code}`),
+        message: new vscode.MarkdownString(
+          `将以下内容发送给 **${target}**（对方只会提供信息，不会修改其代码或环境）：\n\n---\n\n${body}${code}`,
+        ),
       },
     };
   }
@@ -135,14 +137,15 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       done: false,
     });
 
-    const waitSec = Math.min(Math.max(input.wait_seconds ?? 0, 0), 120);
+    // 默认等待对方回复（取配置的“等待回复默认超时”），显式传 0 才不等待
+    const waitSec = Math.min(Math.max(input.wait_seconds ?? store.config.behavior.waitTimeoutSec, 0), 180);
     if (waitSec <= 0) {
       return json({
         status: reachable ? 'sent' : 'queued',
         request_id: env.id,
         target: colleague.id,
         hint: reachable
-          ? '对方回复后可用 talk2copilot_wait_reply 获取，或查看收件箱。'
+          ? '已按请求不等待回复；之后可用 talk2copilot_wait_reply 获取结果，或查看收件箱。'
           : '对方当前离线，消息已在本机排队，待其上线后自动重发。',
       });
     }
@@ -153,8 +156,8 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
         request_id: env.id,
         target: colleague.id,
         hint: reachable
-          ? `已等待 ${waitSec} 秒仍未收到回复，可稍后用 talk2copilot_wait_reply 继续等待。`
-          : `对方当前离线（消息已排队），等待 ${waitSec} 秒未收到回复。`,
+          ? `已等待 ${waitSec} 秒仍未收到回复。请调用 talk2copilot_wait_reply（request_id="${env.id}"）继续等待，拿到对方回复后再继续。`
+          : `对方当前离线（消息已排队），等待 ${waitSec} 秒未收到回复；对方上线后可用 talk2copilot_wait_reply 继续等待。`,
       });
     }
     return json({
@@ -200,7 +203,11 @@ export class WaitReplyTool implements vscode.LanguageModelTool<WaitReplyInput> {
     const waitSec = Math.min(Math.max(input.timeout_seconds ?? defaultSec, 1), 180);
     const reply = await waiters.waitFor(input.request_id, waitSec * 1000, token);
     if (!reply) {
-      return json({ status: 'pending', request_id: input.request_id, hint: `已等待 ${waitSec} 秒，仍未收到回复。` });
+      return json({
+        status: 'pending',
+        request_id: input.request_id,
+        hint: `已等待 ${waitSec} 秒，仍未收到回复。请再次调用 talk2copilot_wait_reply 继续等待（每次最长 180 秒），直到拿到回复再继续。`,
+      });
     }
     return json({
       status: 'ok',
@@ -230,7 +237,7 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
       confirmationMessages: {
         title: '回复同事消息',
         message: new vscode.MarkdownString(
-          `回复 ${record?.peerId ?? ''}（${options.input.request_id}）：\n\n---\n\n${truncate(options.input.message)}` +
+          `回复 ${record?.peerId ?? ''}（${options.input.request_id}，仅提供信息）：\n\n---\n\n${truncate(options.input.message)}` +
           (options.input.snippet ? `\n\n\`\`\`${options.input.snippet_language ?? ''}\n${truncate(options.input.snippet)}\n\`\`\`` : '')
         ),
       },
