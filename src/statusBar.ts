@@ -11,7 +11,7 @@ export class StatusBar {
     private readonly getOnlineIds: () => string[],
   ) {
     this.item = vscode.window.createStatusBarItem('talk2copilot.status', vscode.StatusBarAlignment.Left, 1000);
-    this.item.name = 'Copilot Bridge';
+    this.item.name = 'Copilot2Copilot';
     this.item.command = 'talk2copilot.openConsole';
     this.item.show();
     this.update({ state: 'stopped', detail: '未启动' });
@@ -25,22 +25,22 @@ export class StatusBar {
     const online = this.getOnlineIds().length;
 
     if (missing.length > 0) {
-      this.item.text = `$(warning) Copilot Bridge${badge}`;
+      this.item.text = `$(warning) Copilot2Copilot${badge}`;
       this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     } else {
       this.item.backgroundColor = undefined;
       switch (status.state) {
         case 'online':
-          this.item.text = `$(comment-discussion) Copilot Bridge${badge}`;
+          this.item.text = `$(comment-discussion) Copilot2Copilot${badge}`;
           break;
         case 'connecting':
-          this.item.text = '$(sync~spin) Copilot Bridge';
+          this.item.text = '$(sync~spin) Copilot2Copilot';
           break;
         case 'offline':
-          this.item.text = `$(warning) Copilot Bridge${badge}`;
+          this.item.text = `$(warning) Copilot2Copilot${badge}`;
           break;
         default:
-          this.item.text = '$(circle-slash) Copilot Bridge';
+          this.item.text = '$(circle-slash) Copilot2Copilot';
       }
     }
 

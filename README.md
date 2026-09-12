@@ -1,4 +1,4 @@
-# Copilot Bridge
+# Copilot2Copilot
 
 在 GitHub Copilot 中注册“向同事沟通”工具，让**双方的 Copilot 直接沟通**：你告诉自己的 Copilot “帮我问张三：XX 接口的分页参数怎么传”，消息会送达同事的 VS Code，由其 Copilot 阅读理解并回复；代码细节的往返全程自动流转。
 

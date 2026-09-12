@@ -59,7 +59,7 @@ export class ConsolePanel {
       this.postState();
       return;
     }
-    const panel = vscode.window.createWebviewPanel('talk2copilot.console', 'Copilot Bridge', vscode.ViewColumn.Active, {
+    const panel = vscode.window.createWebviewPanel('talk2copilot.console', 'Copilot2Copilot', vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')],
@@ -162,8 +162,8 @@ export class ConsolePanel {
         this.postState(true);
         void vscode.window.showInformationMessage(
           m.workspaceOverride
-            ? 'Copilot Bridge：已保存为该工作区的独立档案并应用'
-            : 'Copilot Bridge 配置已保存并应用',
+            ? 'Copilot2Copilot：已保存为该工作区的独立档案并应用'
+            : 'Copilot2Copilot 配置已保存并应用',
         );
         break;
       }
@@ -191,7 +191,7 @@ export class ConsolePanel {
           setTimeout(() => {
             if (!this.deps.getOnlineIds().includes(peerId)) {
               void vscode.window.showWarningMessage(
-                `Copilot Bridge：暂未连接到 ${peerId}。请检查对方是否已启动、地址是否正确、防火墙是否放行。`,
+                `Copilot2Copilot：暂未连接到 ${peerId}。请检查对方是否已启动、地址是否正确、防火墙是否放行。`,
               );
             }
           }, 6000);
@@ -213,7 +213,7 @@ export class ConsolePanel {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${styleUri}">
-<title>Copilot Bridge</title>
+<title>Copilot2Copilot</title>
 </head>
 <body>
 <header>
