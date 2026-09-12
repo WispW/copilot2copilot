@@ -6,6 +6,10 @@
   "publisher": "WispW",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WispW/copilot2copilot.git"
+  },
   "engines": {
     "vscode": "^1.104.0"
   },
