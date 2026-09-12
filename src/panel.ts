@@ -1,8 +1,7 @@
-import * as os from 'os';
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
 import { ColleagueProfile } from './protocol';
-import { AppConfig, HistoryItem, Store, WorkspaceIdentity } from './store';
+import { AppConfig, ColleagueConfig, HistoryItem, Store, WorkspaceIdentity } from './store';
 import { TransportStatus } from './transport/types';
 
 interface PanelState {
@@ -27,6 +26,9 @@ interface PanelDeps {
   restart(): Promise<void>;
   connectPeer(peerId: string): void;
 }
+
+/** 界面草稿里的沟通方：带一个仅前端使用的“地址被编辑过”标记 */
+type DraftColleague = ColleagueConfig & { lanAddrEdited?: boolean };
 
 export class ConsolePanel {
   private panel?: vscode.WebviewPanel;
@@ -114,16 +116,7 @@ export class ConsolePanel {
   }
 
   private myAddresses(): string[] {
-    const port = this.store.config.lan.listenPort;
-    const out: string[] = [];
-    for (const infos of Object.values(os.networkInterfaces())) {
-      for (const info of infos ?? []) {
-        if (info.family === 'IPv4' && !info.internal) {
-          out.push(`${info.address}:${port}`);
-        }
-      }
-    }
-    return out;
+    return this.store.myAddresses();
   }
 
   private async handleMessage(msg: unknown): Promise<void> {
@@ -145,11 +138,20 @@ export class ConsolePanel {
           // 对方档案（role/scope）以 store 中已同步的值为准，避免界面旧快照把它覆盖成空
           const merged: AppConfig = {
             ...m.config,
-            colleagues: m.config.colleagues.map(c => {
-              const current = this.store.config.colleagues.find(x => x.id === c.id);
-              return current
-                ? { ...c, role: current.role, scope: current.scope, lanAddr: c.lanAddr || current.lanAddr }
-                : c;
+            colleagues: (m.config.colleagues as DraftColleague[]).map(raw => {
+              const current = this.store.config.colleagues.find(x => x.id === raw.id);
+              // 只有界面上真正动过地址才采用草稿值（草稿可能落后于服务端的自动纠正）；
+              // 新建沟通方填了地址，同样算手填
+              const edited = Boolean(raw.lanAddrEdited) || (!current && Boolean(raw.lanAddr?.trim()));
+              const lanAddr = edited || !current ? (raw.lanAddr ?? '') : current.lanAddr;
+              return {
+                ...raw,
+                role: current?.role ?? raw.role,
+                scope: current?.scope ?? raw.scope,
+                lanAddr,
+                // 手填值被清空 ⇒ 交回自动学习，避免空地址连同 manual 标记一起被锁死
+                lanAddrSource: edited ? (lanAddr.trim() ? 'manual' : 'auto') : (current?.lanAddrSource ?? 'auto'),
+              };
             }),
           };
           await this.store.updateConfig(merged);

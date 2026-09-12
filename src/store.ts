@@ -11,6 +11,8 @@ export interface ColleagueConfig {
   scope: string;
   /** 局域网地址，形如 192.168.5.40:3901 */
   lanAddr: string;
+  /** manual=界面手填，不自动覆盖；auto=自动学习，可被后续学习结果纠正 */
+  lanAddrSource?: 'manual' | 'auto';
   /** 中继模式下的对端 id */
   relayPeerId: string;
 }
@@ -71,10 +73,27 @@ function normalize(raw: Partial<AppConfig>): AppConfig {
         role: String(c?.role ?? ''),
         scope: String(c?.scope ?? ''),
         lanAddr: String(c?.lanAddr ?? ''),
+        lanAddrSource: c?.lanAddrSource === 'manual' ? 'manual' : 'auto',
         relayPeerId: String(c?.relayPeerId ?? ''),
       }))
       : [],
   };
+}
+
+/**
+ * 挑选该同事的可回连地址。连接源 IP 在隧道/转发/多实例场景下可能是第三方地址，
+ * 故优先采用对端自报的地址；其中与源 IP 同址的那条最可信（顺便拿到对方端口）。
+ */
+function pickLanAddr(declared: unknown, observed: string): string {
+  const list = (Array.isArray(declared) ? declared : [])
+    .filter((a: unknown): a is string => typeof a === 'string')
+    .map(a => a.trim())
+    .filter(a => a.length > 0);
+  if (!observed) {
+    return list[0] ?? '';
+  }
+  const matched = list.find(a => a === observed || a.startsWith(`${observed}:`));
+  return matched ?? list[0] ?? observed;
 }
 
 /** 工作区级档案覆盖（未设置的项回落全局默认） */
@@ -151,6 +170,20 @@ export class Store {
     return folders.length === 1 ? folders[0].name : `${folders[0].name} 等 ${folders.length} 个工作区`;
   }
 
+  /** 本机可被回连的局域网地址（含监听端口），随档案声明给同事并在面板展示 */
+  myAddresses(): string[] {
+    const port = this.cfg.lan.listenPort;
+    const out: string[] = [];
+    for (const infos of Object.values(os.networkInterfaces())) {
+      for (const info of infos ?? []) {
+        if (info.family === 'IPv4' && !info.internal) {
+          out.push(`${info.address}:${port}`);
+        }
+      }
+    }
+    return out;
+  }
+
   /** 设置或清除当前工作区的独立档案 */
   async setWorkspaceIdentity(next: WorkspaceIdentity | undefined): Promise<void> {
     const normalized = next && (next.id?.trim() || next.role?.trim() || next.scope?.trim()) ? next : undefined;
@@ -175,18 +208,34 @@ export class Store {
 
   /** 收到 hello 或任意消息时更新联系人档案；未登记的对方自动登记（可信内网） */
   async applyPeerProfile(profile: ColleagueProfile, peerId: string, suggestedAddr = ''): Promise<boolean> {
+    const learned = pickLanAddr(profile.addrs, suggestedAddr);
     const idx = this.cfg.colleagues.findIndex(c => c.id === peerId || c.relayPeerId === peerId);
     if (idx < 0) {
-      this.cfg.colleagues.push({ id: peerId, role: profile.role, scope: profile.scope, lanAddr: suggestedAddr, relayPeerId: '' });
+      this.cfg.colleagues.push({
+        id: peerId,
+        role: profile.role,
+        scope: profile.scope,
+        lanAddr: learned,
+        lanAddrSource: 'auto',
+        relayPeerId: '',
+      });
       await this.updateConfig(this.cfg);
       return true;
     }
     const c = this.cfg.colleagues[idx];
-    const lanAddr = c.lanAddr || suggestedAddr;
+    // 界面手填的地址不覆盖；自动学到的地址允许被后续学习结果纠正
+    const lanAddr = c.lanAddr && c.lanAddrSource === 'manual' ? c.lanAddr : (learned || c.lanAddr);
     if (c.role === profile.role && c.scope === profile.scope && c.lanAddr === lanAddr) {
       return false;
     }
-    this.cfg.colleagues[idx] = { ...c, role: profile.role, scope: profile.scope, lanAddr };
+    this.cfg.colleagues[idx] = {
+      ...c,
+      role: profile.role,
+      scope: profile.scope,
+      lanAddr,
+      // 手填值不存在时退回自动学习，避免空地址连同 manual 标记一起被锁死
+      lanAddrSource: c.lanAddrSource === 'manual' && lanAddr ? 'manual' : 'auto',
+    };
     await this.updateConfig(this.cfg);
     return true;
   }

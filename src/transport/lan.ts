@@ -74,15 +74,22 @@ export class LanTransport implements Transport {
     if (link.ws?.readyState === WebSocket.OPEN) {
       log(`[lan] 发送 ${env.kind} → ${env.to}（消息 ${env.id}）`);
       link.ws.send(JSON.stringify(env));
-    } else {
-      log(`[lan] 连接不可用，入队 ${env.kind} → ${env.to}（队列 ${link.queue.length + 1} 条）`);
-      link.queue.push(env);
-      if (link.queue.length > MAX_QUEUE) {
-        link.queue.shift();
-        log('[lan] 队列超过上限，丢弃最早的一条');
-      }
-      this.ensureLink(env.to);
+      return Promise.resolve();
     }
+    // 对方连入的连接等价可用；否则只会被连入的一方在地址不可回连时永远发不出去
+    const inbound = this.inbound.get(env.to);
+    if (inbound?.readyState === WebSocket.OPEN) {
+      log(`[lan] 出站不可用，改经对方连入的连接发送 ${env.kind} → ${env.to}（消息 ${env.id}）`);
+      inbound.send(JSON.stringify(env));
+      return Promise.resolve();
+    }
+    log(`[lan] 连接不可用，入队 ${env.kind} → ${env.to}（队列 ${link.queue.length + 1} 条）`);
+    link.queue.push(env);
+    if (link.queue.length > MAX_QUEUE) {
+      link.queue.shift();
+      log('[lan] 队列超过上限，丢弃最早的一条');
+    }
+    this.ensureLink(env.to);
     return Promise.resolve();
   }
 
@@ -168,6 +175,8 @@ export class LanTransport implements Transport {
     const suggestedAddr = ip && ip !== '::1' && ip !== '127.0.0.1' ? ip : '';
     log(`[lan] 对方 ${peerId} 已连入（来自 ${remoteAddress || '未知地址'}）${known ? '' : '，首次出现，将自动登记为沟通方'}`);
     this.inbound.set(peerId, ws);
+    // 对方连入即可当作发送通道：把此前积压的消息补发出去（否则只被连入的一侧会一直压队列）
+    this.flush(this.linkFor(peerId), ws);
     ws.on('message', data => this.handleRaw(data, ws, suggestedAddr));
     ws.on('error', () => { /* 由 close 统一处理 */ });
     ws.on('close', () => {
@@ -237,9 +246,9 @@ export class LanTransport implements Transport {
       this.ensureLink(peerId);
     }, link.retryMs);
   }
-  /** 自己的档案声明消息 */
+  /** 自己的档案声明消息（附可回连地址，供对方避开隧道/转发下错误的连接源 IP） */
   private helloEnvelope(peerId: string): string {
-    const identity = this.store.config.identity;
+    const identity = { ...this.store.config.identity, addrs: this.store.myAddresses() };
     return JSON.stringify(makeEnvelope({ kind: 'hello', from: identity.id, to: peerId, profile: identity }));
   }
 
@@ -255,8 +264,9 @@ export class LanTransport implements Transport {
   }
 
   
-  private flush(link: PeerLink): void {
-    if (link.ws?.readyState !== WebSocket.OPEN) {
+  private flush(link: PeerLink, socket?: WebSocket): void {
+    const ws = socket ?? link.ws;
+    if (ws?.readyState !== WebSocket.OPEN) {
       return;
     }
     const pending = link.queue.splice(0);
@@ -264,7 +274,7 @@ export class LanTransport implements Transport {
       log(`[lan] 补发队列消息 ${pending.length} 条`);
     }
     for (const env of pending) {
-      link.ws.send(JSON.stringify(env));
+      ws.send(JSON.stringify(env));
     }
   }
 
@@ -291,7 +301,10 @@ export class LanTransport implements Transport {
     }
     log(`[lan] 收到 ${parsed.kind} from=${parsed.from}（消息 ${parsed.id}）`);
     if (parsed.profile) {
-      void this.store.applyPeerProfile(parsed.profile, parsed.from, inboundAddr).then(changed => {
+      // 只有档案声明才参与地址学习：普通消息不带自报地址，若仍按连接源 IP 学习，
+      // 刚学到的正确地址会被源 IP 覆盖（且恰好发生在只被连入的一侧）
+      const observedAddr = parsed.kind === 'hello' ? (inboundAddr ?? '') : '';
+      void this.store.applyPeerProfile(parsed.profile, parsed.from, observedAddr).then(changed => {
         if (changed) {
           this.reportStatus();
         }

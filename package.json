@@ -2,7 +2,7 @@
   "name": "copilot2copilot",
   "displayName": "Copilot2Copilot",
   "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 直接沟通（局域网 / 中继双模式）",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "publisher": "WispW",
   "private": true,
   "license": "MIT",
