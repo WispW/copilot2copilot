@@ -1,0 +1,37 @@
+[Unit]
+Description=Copilot2Copilot 中继服务
+Documentation=https://github.com/WispW/copilot2copilot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=talk2copilot
+Group=talk2copilot
+WorkingDirectory=/opt/talk2copilot-relay
+EnvironmentFile=/etc/talk2copilot-relay.env
+# 安装脚本会把这里的 node 路径替换为目标机上的实际路径
+ExecStart=/usr/bin/node /opt/talk2copilot-relay/server.js
+Restart=always
+RestartSec=3
+# 留出优雅关闭（发关闭帧）的时间，超过则由 systemd 强杀
+TimeoutStopSec=10
+SyslogIdentifier=talk2copilot-relay
+
+# 加固：服务只读文件系统、无额外能力、仅需网络
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

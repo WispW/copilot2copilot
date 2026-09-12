@@ -35,7 +35,7 @@ npm run vsix         # 打包 vsix 到 vsix/ 目录（文件名含版本号）�
 
 - **连接**：选择局域网 / 中继模式；局域网填监听端口（需防火墙放行）；中继填 `wss://` 地址、自己的 id，令牌可选（存系统密钥库）
 - **我的档案**：id、角色、负责内容（必填齐全才能通信，未完善时状态栏与配置页会提示）。可勾选“**本工作区使用独立档案**”，让档案（含 id）随工作区自动切换；未勾选时编辑的是对所有工作区生效的默认档案。注意：id 也按工作区时，对方需要在“沟通方”里填你**对应工作区**的 id
-- **沟通方**：只需填 **对方 id** 与地址（局域网地址 / 中继 id）；对方连入时会自动登记，角色与负责内容会自动同步，档案同步完成前无法收发消息
+- **沟通方**：填 **对方 id** 与地址。**中继模式**下必须同时填对方的**中继 id**（只填对方 id 不会交换档案声明，对方会一直显示离线）；填一侧即可双向自举——对方收到声明后会自动登记并回发。**局域网模式**下对方连入时会自动登记。角色与负责内容自动同步，档案同步完成前无法收发消息
 - **行为**：等待回复默认超时、历史消息保留条数；收到同事的消息或回复时会**直接触发本机 Copilot 对话**处理
 
 `id` 是双方匹配的唯一依据，两端需互不相同；"沟通方"里填的是**对方**的 id（若填成自己的 id，会被拒绝并在卡片上提示）。
@@ -50,24 +50,33 @@ A（你）在 Copilot Chat（agent 模式）中说：
 
 ## 中继服务器部署
 
+中继服务跑在一台**独立服务器**上，双方各自连它、使用**同一个预共享密码**通信。目标机需有 Node.js 18+。
+
 ```bash
-# 方式一：直接运行
-TALK2COPILOT_TOKEN=<你的令牌> node relay/server.js 8787
+# 方式一：安装脚本（装到 /opt/talk2copilot-relay，注册 systemd 服务并启动）
+sudo relay/deploy/install.sh
+sudo relay/deploy/install.sh /usr/local/bin/node   # node 不在 PATH 时指定绝对路径
+# nvm 装的 node 在 sudo 下不在 PATH，需显式给出（脚本会把它复制进安装目录，
+# 因为 systemd 单元的 ProtectHome 会隐藏 /home）：
+sudo relay/deploy/install.sh /home/<用户>/.nvm/versions/node/v22.11.0/bin/node
 
-# 方式二：systemd（示例）
-# /etc/systemd/system/talk2copilot-relay.service
-[Unit]
-Description=talk2copilot relay
-After=network.target
-
-[Service]
-Environment=TALK2COPILOT_TOKEN=<你的令牌>
-ExecStart=/usr/bin/node /opt/talk2copilot/relay/server.js 8787
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
+# 方式二：前台直接跑（用于临时调试）
+TALK2COPILOT_TOKEN=<你的密码> node relay/server.js 8787
 ```
+
+安装脚本会：**首次安装**时生成随机预共享密码写入 `/etc/talk2copilot-relay.env`（权限 600，含 `PORT` / `HOST` / `TALK2COPILOT_TOKEN` / `LOG_LEVEL`，模板见 `relay/deploy/relay.env.example`；已存在则原样保留），创建无登录权限的服务账号 `talk2copilot`，安装并启用 `talk2copilot-relay.service`，最后自查一次 `/healthz`。改完配置执行 `sudo systemctl restart talk2copilot-relay`。
+
+运维命令：
+
+```bash
+sudo systemctl status talk2copilot-relay    # 运行状态
+curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","uptimeSec":..,"peers":..,"queued":..,"tokenRequired":true,"protocol":1}
+sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，可用 LOG_LEVEL 调级别）
+```
+
+- `HOST` 默认 `0.0.0.0`，内网各机可直连；只允许反向代理 / 隧道访问时改为 `127.0.0.1`
+- 收到 `SIGTERM`（`systemctl stop` / `restart`）时先给客户端发关闭帧再退出，客户端会自动重连
+- 在线名单与离线暂存都在内存中，**重启服务端会丢弃暂存的离线消息**
 
 跨网络使用时可置于 Cloudflare Tunnel / Nginx 之后（需支持 WebSocket），地址形如 `wss://relay.example.com`，客户端会自动拼 `/ws`。
 
