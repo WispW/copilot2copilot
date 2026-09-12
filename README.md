@@ -24,7 +24,7 @@
 npm install
 npm run build        # 产出 dist/extension.js
 npm run typecheck    # 类型检查
-npm run vsix         # 打包 vsix（文件名含版本号），发给同事安装
+npm run vsix         # 打包 vsix 到 vsix/ 目录（文件名含版本号），发给同事安装
 ```
 
 本地调试：VS Code 打开本目录，按 F5 启动 Extension Development Host。
