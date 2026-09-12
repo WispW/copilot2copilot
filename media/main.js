@@ -63,7 +63,7 @@ window.addEventListener('message', event => {
   }
 });
 
-/** 把服务端权威的只读字段（对方档案、自动补全的地址）同步进正在编辑的 draft */
+/** 把服务端权威的只读字段（对方档案、自动学习的地址）同步进正在编辑的 draft */
 function syncReadonlyFields() {
   (state.config.colleagues || []).forEach(sc => {
     const dc = draft.colleagues.find(c => c.id === sc.id);
@@ -72,8 +72,10 @@ function syncReadonlyFields() {
     }
     dc.role = sc.role;
     dc.scope = sc.scope;
-    if (!dc.lanAddr) {
+    // 用户没动过地址就跟随服务端，否则过期的草稿会把自动纠正过的地址又写回去
+    if (!dc.lanAddrEdited) {
       dc.lanAddr = sc.lanAddr;
+      dc.lanAddrSource = sc.lanAddrSource;
     }
   });
 }
@@ -182,14 +184,18 @@ function renderPeers() {
       </div>
       <div class="grid">
         <label>对方 id <input data-i="${i}" data-f="id" value="${escapeHtml(c.id)}" placeholder="与对方“我的档案”中的 id 一致"></label>
-        <label>局域网地址 <input data-i="${i}" data-f="lanAddr" value="${escapeHtml(c.lanAddr)}" placeholder="192.168.5.40:3901（可只填 IP）"></label>
+        <label>局域网地址${c.lanAddrSource === 'auto' && c.lanAddr ? '（自动学习，可能不可回连）' : ''} <input data-i="${i}" data-f="lanAddr" value="${escapeHtml(c.lanAddr)}" placeholder="192.168.5.40:3901（可只填 IP）"></label>
         <label>中继 id <input data-i="${i}" data-f="relayPeerId" value="${escapeHtml(c.relayPeerId)}" placeholder="对方在中继上的 id"></label>
         <label>角色（自动同步） <input value="${escapeHtml(c.role)}" readonly placeholder="等待对方同步"></label>
         <label>负责内容（自动同步） <input value="${escapeHtml(c.scope)}" readonly placeholder="等待对方同步"></label>
       </div>`;
     div.querySelectorAll('input[data-f]').forEach(inp => {
       inp.addEventListener('input', () => {
-        draft.colleagues[Number(inp.dataset.i)][inp.dataset.f] = inp.value;
+        const peer = draft.colleagues[Number(inp.dataset.i)];
+        peer[inp.dataset.f] = inp.value;
+        if (inp.dataset.f === 'lanAddr') {
+          peer.lanAddrEdited = true;
+        }
       });
     });
     div.querySelector('button[data-del]').addEventListener('click', () => {
