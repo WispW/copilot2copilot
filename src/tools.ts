@@ -97,17 +97,17 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Talk2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot Bridge 配置界面检查模式与连接设置。');
     }
     const identity = store.config.identity;
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
-      throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Talk2Copilot 配置界面补全“我的档案”。`);
+      throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot Bridge 配置界面补全“我的档案”。`);
     }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
-        ? '尚未配置任何沟通方，请先在 Talk2Copilot 配置界面添加同事。'
+        ? '尚未配置任何沟通方，请先在 Copilot Bridge 配置界面添加同事。'
         : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单。`);
     }
     if (!store.hasPeerProfile(colleague)) {
@@ -249,11 +249,11 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Talk2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot Bridge 配置界面检查模式与连接设置。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
-      throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Talk2Copilot 配置界面补全“我的档案”。`);
+      throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot Bridge 配置界面补全“我的档案”。`);
     }
     const original = store.findMessage(input.request_id);
     if (!original || original.direction !== 'in') {
@@ -297,7 +297,7 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<Record<strin
       mode: store.config.mode === 'relay' ? '中继' : '局域网',
       my_id: store.config.identity.id,
       colleagues,
-      ...(colleagues.length === 0 ? { note: '尚未配置沟通方，请先在 Talk2Copilot 配置界面添加同事。' } : {}),
+      ...(colleagues.length === 0 ? { note: '尚未配置沟通方，请先在 Copilot Bridge 配置界面添加同事。' } : {}),
     });
   }
 }

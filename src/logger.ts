@@ -2,10 +2,10 @@ import * as vscode from 'vscode';
 
 let channel: vscode.OutputChannel | undefined;
 
-/** 全局日志：输出到“输出”面板的 Talk2Copilot 通道 */
+/** 全局日志：输出到“输出”面板的 Copilot Bridge 通道 */
 export function log(message: string): void {
   if (!channel) {
-    channel = vscode.window.createOutputChannel('Talk2Copilot');
+    channel = vscode.window.createOutputChannel('Copilot Bridge');
   }
   channel.appendLine(`[${new Date().toLocaleTimeString()}] ${message}`);
 }
@@ -22,7 +22,7 @@ export function logError(message: string, err?: unknown): void {
 
 export function showLogs(): void {
   if (!channel) {
-    channel = vscode.window.createOutputChannel('Talk2Copilot');
+    channel = vscode.window.createOutputChannel('Copilot Bridge');
   }
   channel.show(true);
 }

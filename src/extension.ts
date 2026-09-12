@@ -66,7 +66,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('talk2copilot.showLogs', () => showLogs()),
     vscode.commands.registerCommand('talk2copilot.testConnection', async () => {
       await restart();
-      void vscode.window.showInformationMessage(`Talk2Copilot：${status.detail}`);
+      void vscode.window.showInformationMessage(`Copilot Bridge：${status.detail}`);
     }),
     store.onDidChange(() => statusBar.update(status)),
     new vscode.Disposable(() => {
