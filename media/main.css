@@ -185,6 +185,15 @@ code {
   margin: 8px 0;
 }
 
+/* 已停用的沟通方：整体降低存在感，但保持可读与可操作 */
+.peer.disabled {
+  opacity: 0.55;
+}
+
+.peer.disabled .peer-head b {
+  text-decoration: line-through;
+}
+
 .peer-head {
   display: flex;
   align-items: center;

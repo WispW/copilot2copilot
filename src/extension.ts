@@ -56,6 +56,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getOnlineIds,
     restart,
     connectPeer: peerId => currentTransport?.connectPeer(peerId),
+    scanLan: () => currentTransport?.scanDiscovered?.(),
   });
 
   const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport };

@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import type { IncomingMessage } from 'http';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
 import { log, logError } from '../logger';
-import { isEnvelope, makeEnvelope, MessageEnvelope } from '../protocol';
-import { Store } from '../store';
-import { ConnState, Transport, TransportStatus } from './types';
+import { ColleagueProfile, isEnvelope, makeEnvelope, MessageEnvelope } from '../protocol';
+import { colleagueEnabled, Store } from '../store';
+import { Transport, TransportStatus } from './types';
 
 interface PeerLink {
   ws?: WebSocket;
@@ -15,6 +16,14 @@ interface PeerLink {
 
 const MAX_RETRY_MS = 60_000;
 const MAX_QUEUE = 200;
+/** 单个地址的身份探测超时；短超时是为了让整轮子网扫描能在几秒内结束 */
+const PROBE_TIMEOUT_MS = 400;
+/** 子网扫描的并发数 */
+const SCAN_CONCURRENCY = 32;
+/** 自动发现的扫描间隔 */
+const SCAN_INTERVAL_MS = 60_000;
+/** 虚拟网卡前缀：这些网段没有对等端，扫描它们只会浪费时间 */
+const VIRTUAL_IFACE = /^(docker|veth|virbr|br-|tun|tap|wg|lo)/i;
 
 /** 局域网双向对等：本机监听端口，同时主动连接各同事；离线消息本地排队重发 */
 export class LanTransport implements Transport {
@@ -31,15 +40,31 @@ export class LanTransport implements Transport {
   /** 已明确通告下线的同事（收到其任何消息后恢复在线） */
   private readonly offlinePeers = new Set<string>();
   private running = false;
+  /** 监听失败的原因（端口被占用等）；非空时仍可出站，但收不到入站连接 */
+  private listenProblem = '';
+  /** 子网扫描定时器与进行中标记 */
+  private scanTimer?: ReturnType<typeof setInterval>;
+  private scanning = false;
 
   constructor(private readonly store: Store) {}
 
   async start(): Promise<void> {
     this.running = true;
+    this.listenProblem = '';
     const { listenPort } = this.store.config.lan;
     log(`[lan] 启动：监听端口=${listenPort} 我的id=${this.store.config.identity.id || '(空)'} 同事数=${this.store.config.colleagues.length}（局域网模式不校验令牌）`);
-    await this.startServer(listenPort);
+    const bound = await this.startServer(listenPort);
+    if (!bound) {
+      const occupier = await this.probePortOccupier(listenPort);
+      this.listenProblem = occupier
+        ? `端口 ${listenPort} 已被本扩展的另一个窗口占用（对方档案 id=${occupier}）。本窗口收不到对方的连接，请改用其他监听端口`
+        : `端口 ${listenPort} 已被占用（占用者未回应档案探测，可能不是本扩展或是旧版本）。本窗口收不到对方的连接，请改用其他监听端口`;
+      log(`[lan] ${this.listenProblem}`);
+    }
     for (const c of this.store.config.colleagues) {
+      if (!colleagueEnabled(c)) {
+        continue;
+      }
       if (c.lanAddr) {
         log(`[lan] 待连接同事 ${c.id} → ${c.lanAddr}`);
         this.ensureLink(c.id);
@@ -48,11 +73,23 @@ export class LanTransport implements Transport {
       }
     }
     this.reportStatus();
+    // 自动发现：启动后扫一轮，之后定期扫（同网段新上线的设备随之被发现）
+    void this.scanLan();
+    this.stopScanTimer();
+    this.scanTimer = setInterval(() => void this.scanLan(), SCAN_INTERVAL_MS);
+  }
+
+  private stopScanTimer(): void {
+    if (this.scanTimer) {
+      clearInterval(this.scanTimer);
+      this.scanTimer = undefined;
+    }
   }
 
   async stop(): Promise<void> {
     log('[lan] 停止');
     this.running = false;
+    this.stopScanTimer();
     for (const link of this.links.values()) {
       if (link.timer) {
         clearTimeout(link.timer);
@@ -141,25 +178,137 @@ export class LanTransport implements Transport {
     return link;
   }
 
-  private startServer(port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
+  /**
+   * 启动监听。端口被占用时不再让整个启动流程失败（否则连主动连接同事的循环都不会执行），
+   * 改为探测占用者并给出可操作的提示，同时保留出站能力。
+   * @returns 监听是否成功
+   */
+  private startServer(port: number): Promise<boolean> {
+    return new Promise(resolve => {
       const server = new WebSocketServer({ port });
       server.once('listening', () => {
         this.server = server;
         log(`[lan] 监听成功 0.0.0.0:${port}`);
-        resolve();
+        resolve(true);
       });
       server.once('error', err => {
         logError(`[lan] 监听 ${port} 失败`, err);
-        this.statusEmitter.fire({ state: 'offline', detail: `监听 ${port} 失败: ${(err as Error).message}` });
-        reject(err);
+        resolve(false);
       });
       server.on('connection', (ws, req) => this.acceptIncoming(ws, req.url ?? '/', req.socket.remoteAddress ?? ''));
     });
   }
 
+  /**
+   * 向某个地址发一次身份探测（`?probe=1`），成功则拿到对方档案。
+   * 同一套握手既回答"端口占用者是谁"，也用于局域网自动发现。
+   */
+  private probePeer(ip: string, port: number): Promise<ColleagueProfile | null> {
+    return new Promise(resolve => {
+      const ws = new WebSocket(`ws://${ip}:${port}/?probe=1`, { handshakeTimeout: 2000 });
+      let settled = false;
+      const finish = (value: ColleagueProfile | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        ws.terminate();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(null), PROBE_TIMEOUT_MS);
+      ws.on('message', data => {
+        try {
+          const env = JSON.parse(data.toString()) as { kind?: string; profile?: ColleagueProfile };
+          finish(env.kind === 'probeReply' && env.profile?.id ? env.profile : null);
+        } catch {
+          finish(null);
+        }
+      });
+      // 监听器必须留到最后：terminate 会异步抛出 'error'，一旦无人监听就是未捕获异常
+      ws.on('error', () => finish(null));
+      ws.on('close', () => finish(null));
+      ws.on('unexpected-response', () => finish(null));
+    });
+  }
+
+  /** 端口被占用时探一下占用者：若是本扩展的另一个实例，就能问出它的档案 id */
+  private async probePortOccupier(port: number): Promise<string> {
+    return (await this.probePeer('127.0.0.1', port))?.id ?? '';
+  }
+
+  /** 供界面「扫描局域网」按钮调用 */
+  scanDiscovered(): void {
+    void this.scanLan();
+  }
+
+  /** 扫描本机各网段，自动发现监听同一端口、且也是本扩展的对等端 */
+  private async scanLan(): Promise<void> {
+    if (!this.running || this.scanning) {
+      return;
+    }
+    const port = this.store.config.lan.listenPort;
+    this.scanning = true;
+    try {
+      const targets: string[] = [];
+      for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+        if (VIRTUAL_IFACE.test(name)) {
+          continue;
+        }
+        for (const info of infos ?? []) {
+          if (info.family !== 'IPv4' || info.internal) {
+            continue;
+          }
+          const prefix = info.address.split('.').slice(0, 3).join('.');
+          for (let host = 1; host <= 254; host += 1) {
+            const ip = `${prefix}.${host}`;
+            if (ip !== info.address) {
+              targets.push(ip);
+            }
+          }
+        }
+      }
+      if (targets.length === 0) {
+        return;
+      }
+      let found = 0;
+      for (let i = 0; i < targets.length; i += SCAN_CONCURRENCY) {
+        const batch = targets.slice(i, i + SCAN_CONCURRENCY);
+        const profiles = await Promise.all(batch.map(ip => this.probePeer(ip, port)));
+        profiles.forEach((profile, k) => {
+          if (!profile?.id) {
+            return;
+          }
+          found += 1;
+          void this.store.upsertDiscoveredPeer({
+            id: profile.id,
+            role: profile.role,
+            scope: profile.scope,
+            lanAddr: `${batch[k]}:${port}`,
+          });
+        });
+        if (!this.running) {
+          return;
+        }
+      }
+      log(`[lan] 子网扫描完成：探测 ${targets.length} 个地址，发现 ${found} 个对等端`);
+    } finally {
+      this.scanning = false;
+    }
+  }
+
   private acceptIncoming(ws: WebSocket, url: string, remoteAddress: string): void {
-    const peerId = new URL(url, 'http://localhost').searchParams.get('id') ?? '';
+    const params = new URL(url, 'http://localhost').searchParams;
+    // 占用探测：只回应自己的档案 id 供对方提示用，不登记、不建立通道。
+    // 故意不是协议 envelope（isEnvelope 会拒收），旧版本收到无 id 的探测会直接关闭连接，不会被污染。
+    if (params.get('probe') === '1') {
+      const identity = this.store.config.identity;
+      log(`[lan] 收到端口占用探测，回应本机档案 id=${identity.id || '(空)'}`);
+      ws.send(JSON.stringify({ kind: 'probeReply', profile: identity }));
+      ws.close(4006, 'probe done');
+      return;
+    }
+    const peerId = params.get('id') ?? '';
     if (!peerId) {
       log('[lan] 拒绝连接：对方未声明 id');
       ws.close(4002, 'missing id');
@@ -195,7 +344,7 @@ export class LanTransport implements Transport {
       return;
     }
     const colleague = this.store.config.colleagues.find(c => c.id === peerId);
-    if (!colleague?.lanAddr) {
+    if (!colleagueEnabled(colleague) || !colleague?.lanAddr) {
       return;
     }
     const link = this.linkFor(peerId);
@@ -320,7 +469,13 @@ export class LanTransport implements Transport {
   }
 
   private reportStatus(): void {
-    const state: ConnState = this.running ? 'online' : 'stopped';
-    this.statusEmitter.fire({ state, detail: '局域网监听中' });
+    if (!this.running) {
+      this.statusEmitter.fire({ state: 'stopped', detail: '局域网模式已停止' });
+      return;
+    }
+    this.statusEmitter.fire({
+      state: 'online',
+      detail: this.listenProblem ? `仅出站可用：${this.listenProblem}` : '局域网监听中',
+    });
   }
 }

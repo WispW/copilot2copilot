@@ -1,11 +1,21 @@
 import * as vscode from 'vscode';
+import { request as httpRequest } from 'http';
+import { request as httpsRequest } from 'https';
 import { RawData, WebSocket } from 'ws';
 import { log, logError } from '../logger';
 import { isEnvelope, makeEnvelope, MessageEnvelope } from '../protocol';
-import { Store } from '../store';
+import { colleagueEnabled, Store } from '../store';
 import { Transport, TransportStatus } from './types';
 
 const MAX_RETRY_MS = 30_000;
+
+/** 4xxx 关闭码表示配置或身份问题，重连无法自愈（尤其同 id 多窗口会互相顶下线） */
+const FATAL_CLOSE_REASONS: Record<number, string> = {
+  4001: '中继令牌不正确',
+  4002: '未向中继声明本机 id',
+  4004: '该中继 id 已被另一个窗口占用，本窗口被顶下线',
+  4005: '该中继 id 已被另一个窗口占用',
+};
 
 /** 中继模式：双方都连接中继服务器，由服务器转发并代存离线消息 */
 export class RelayTransport implements Transport {
@@ -20,6 +30,8 @@ export class RelayTransport implements Transport {
   private timer?: ReturnType<typeof setTimeout>;
   private running = false;
   private token = '';
+  /** 不可自愈的停止原因；非空时不再自动重连，等用户点「连接」 */
+  private fatalReason = '';
   private onlinePeers = new Set<string>();
   /** 本次连接中已向哪些同事声明过自己的档案（避免重复与回环） */
   private readonly helloSent = new Set<string>();
@@ -30,8 +42,9 @@ export class RelayTransport implements Transport {
 
   async start(): Promise<void> {
     this.running = true;
+    this.fatalReason = '';
     this.token = await this.store.getToken();
-    log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 我的id=${this.store.config.relay.myPeerId || '(空)'} 令牌=${this.token ? '已设置' : '未设置'}`);
+    log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'}`);
     this.connect();
   }
 
@@ -68,9 +81,9 @@ export class RelayTransport implements Transport {
     return colleague?.relayPeerId || to;
   }
 
-  /** 本机在中继上的 id：消息的 from 用它，便于对方识别与回投 */
+  /** 本机在中继上的 id：一律取档案 id，各窗口因此天然使用不同 id */
   private myRelayId(): string {
-    return this.store.config.relay.myPeerId || this.store.config.identity.id;
+    return this.store.config.identity.id;
   }
 
   isOnline(peerId: string): boolean {
@@ -85,7 +98,7 @@ export class RelayTransport implements Transport {
   sendOfflineNotice(): void {
     const identity = this.store.config.identity;
     for (const c of this.store.config.colleagues) {
-      if (!c.relayPeerId) {
+      if (!c.relayPeerId || !colleagueEnabled(c)) {
         continue;
       }
       void this.send(makeEnvelope({ kind: 'offline', from: this.myRelayId(), to: c.id, profile: identity }));
@@ -103,27 +116,103 @@ export class RelayTransport implements Transport {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
+    if (this.fatalReason) {
+      log(`[relay] 手动重试：清除停止原因（${this.fatalReason}）`);
+      this.fatalReason = '';
+    }
     this.retryMs = 1000;
     this.connect();
   }
 
-  private connect(): void {
+  /**
+   * 连接前问一次中继的在线名单（带令牌），判断本机 id 是否已被占用。
+   * 任何失败（旧版服务端无该端点、网络异常、响应不可解析）都视为"未占用"，
+   * 让连接流程照常继续，由服务端的 4005 兜底。
+   */
+  private idTakenOnRelay(url: string, myId: string): Promise<boolean> {
+    return new Promise(resolve => {
+      let target: URL;
+      try {
+        target = new URL(`${url.replace(/^ws/, 'http').replace(/\/+$/, '')}/peers`);
+      } catch {
+        resolve(false);
+        return;
+      }
+      const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
+      const req = send(
+        {
+          protocol: target.protocol,
+          hostname: target.hostname,
+          port: target.port || undefined,
+          path: target.pathname,
+          method: 'GET',
+          headers: this.token ? { authorization: `Bearer ${this.token}` } : undefined,
+          timeout: 4000,
+        },
+        res => {
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => (body += chunk));
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(body) as { peers?: unknown };
+              resolve(Array.isArray(parsed.peers) && parsed.peers.includes(myId));
+            } catch {
+              resolve(false);
+            }
+          });
+        },
+      );
+      req.on('timeout', () => {
+        log('[relay] 预检在线名单超时，按未占用处理');
+        req.destroy();
+        resolve(false);
+      });
+      req.on('error', () => resolve(false));
+      req.end();
+    });
+  }
+
+  private async connect(): Promise<void> {
     if (!this.running) {
       return;
     }
-    const { url, myPeerId } = this.store.config.relay;
-    if (!url || !myPeerId) {
-      log('[relay] 未配置中继地址或我的 id，无法连接');
-      this.statusEmitter.fire({ state: 'offline', detail: '未配置中继服务器地址或我的 id' });
+    const { url } = this.store.config.relay;
+    const myId = this.myRelayId();
+    if (!url || !myId) {
+      log('[relay] 未配置中继地址或档案 id，无法连接');
+      this.statusEmitter.fire({ state: 'offline', detail: '未配置中继服务器地址或档案 id' });
       return;
     }
-    const wsUrl = `${url.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(myPeerId)}`;
-    log(`[relay] 连接中继 ${wsUrl}${this.token ? '（携带令牌）' : ''}`);
     this.statusEmitter.fire({ state: 'connecting', detail: '正在连接中继服务器...' });
-    const ws = new WebSocket(wsUrl, {
-      headers: this.token ? { authorization: `Bearer ${this.token}` } : undefined,
-      handshakeTimeout: 8000,
-    });
+    if (await this.idTakenOnRelay(url, myId)) {
+      // 服务端也会拒绝同 id 的新连接（4005），这里提前拦下可给出更明确的指引
+      this.fatalReason = '该中继 id 已被另一个窗口占用';
+      log(`[relay] 预检发现 id=${myId} 已在线，放弃连接`);
+      this.statusEmitter.fire({
+        state: 'offline',
+        detail: `中继上已有 id=${myId} 的窗口在线（很可能是本机另一个窗口）。请在上方「本工作区档案」把 id 改成别的值后点「连接」重试`,
+      });
+      return;
+    }
+    if (!this.running) {
+      return;
+    }
+    const wsUrl = `${url.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(myId)}`;
+    log(`[relay] 连接中继 ${wsUrl}${this.token ? '（携带令牌）' : ''}`);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl, {
+        headers: this.token ? { authorization: `Bearer ${this.token}` } : undefined,
+        handshakeTimeout: 8000,
+      });
+    } catch (err) {
+      // 地址格式非法时构造会直接抛出；此处兜住，避免变成未处理的 Promise 拒绝
+      this.fatalReason = '中继地址无法连接';
+      logError('[relay] 无法创建连接', err);
+      this.statusEmitter.fire({ state: 'offline', detail: `中继地址无法连接：${(err as Error).message}。请检查地址格式后点「连接」重试` });
+      return;
+    }
     this.ws = ws;
     ws.on('open', () => {
       log('[relay] 已连接中继服务器');
@@ -131,7 +220,7 @@ export class RelayTransport implements Transport {
       this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
       const identity = this.store.config.identity;
       for (const c of this.store.config.colleagues) {
-        if (c.relayPeerId) {
+        if (c.relayPeerId && colleagueEnabled(c)) {
           log(`[relay] 向 ${c.relayPeerId} 发送档案声明`);
           this.helloSent.add(c.id);
           ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: c.relayPeerId, profile: identity })));
@@ -152,10 +241,19 @@ export class RelayTransport implements Transport {
     ws.on('close', (code, reason) => {
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reason.toString() || '(空)'}`);
       this.helloSent.clear();
-      if (this.running) {
-        this.scheduleReconnect();
-        this.statusEmitter.fire({ state: 'offline', detail: '与中继服务器断开，重连中...' });
+      if (!this.running) {
+        return;
       }
+      const fatal = FATAL_CLOSE_REASONS[code];
+      if (fatal) {
+        // 重连只会再次被拒（甚至把另一个窗口顶下线），因此停下等用户处理
+        this.fatalReason = fatal;
+        log(`[relay] 该关闭码不可自愈（${code}），停止自动重连`);
+        this.statusEmitter.fire({ state: 'offline', detail: `${fatal}。请更换 id 或修正配置后点「连接」重试` });
+        return;
+      }
+      this.scheduleReconnect();
+      this.statusEmitter.fire({ state: 'offline', detail: '与中继服务器断开，重连中...' });
     });
   }
 
@@ -185,6 +283,7 @@ export class RelayTransport implements Transport {
     if (parsed.kind === 'presence') {
       this.onlinePeers = new Set(parsed.peers ?? []);
       log(`[relay] 在线名单更新：${[...this.onlinePeers].join(', ') || '(空)'}`);
+      void this.registerDiscoveredPeers();
       this.refreshPresenceStatus();
       return;
     }
@@ -212,6 +311,27 @@ export class RelayTransport implements Transport {
       });
     }
     this.messageEmitter.fire(parsed);
+  }
+
+  /**
+   * 中继广播的在线名单 → 自动登记为本机沟通方（跳过自己与已登记的）。
+   * 中继上的 id 同时也是路由地址，因此 relayPeerId 取同一个值。
+   */
+  private async registerDiscoveredPeers(): Promise<void> {
+    const known = new Set(this.store.config.colleagues.map(c => c.id));
+    const mine = this.myRelayId();
+    let added = 0;
+    for (const peerId of this.onlinePeers) {
+      if (peerId === mine || known.has(peerId)) {
+        continue;
+      }
+      if (await this.store.upsertDiscoveredPeer({ id: peerId, relayPeerId: peerId })) {
+        added += 1;
+      }
+    }
+    if (added > 0) {
+      log(`[relay] 自动登记 ${added} 位在线设备为本机沟通方`);
+    }
   }
 
   private refreshPresenceStatus(): void {
