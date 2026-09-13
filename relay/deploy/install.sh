@@ -97,7 +97,10 @@ echo "[5/6] 安装并启动 systemd 服务"
 install -m 0644 "$REPO_ROOT/relay/deploy/${UNIT_NAME}" "$UNIT_PATH"
 sed -i "s|^ExecStart=.*|ExecStart=${SERVICE_NODE} ${INSTALL_DIR}/server.js|" "$UNIT_PATH"
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME"
+# 用 restart 而非 enable --now：后者对已在运行的服务不重启，
+# 重跑本脚本时会继续跑旧代码，而健康检查仍通过，导致“以为部署了其实没有”
+systemctl restart "$UNIT_NAME"
 
 echo "[6/6] 健康检查"
 port="$(sed -n 's/^PORT=//p' "$ENV_FILE" | tail -1)"
@@ -138,6 +141,13 @@ if [[ -z "$body" ]]; then
 fi
 
 echo "$body"
+# 确认进程里跑的是本次安装的代码：/peers 是较新版本才有的端点，旧版会 404
+if command -v curl >/dev/null 2>&1; then
+  peers_code="$(curl -s -o /dev/null -w '%{http_code}' "http://${probe_host}:${port}/peers" 2>/dev/null || echo 000)"
+  if [[ "$peers_code" == "404" || "$peers_code" == "000" ]]; then
+    echo "警告：/peers 返回 HTTP ${peers_code}，运行中的可能仍是旧代码。请执行：sudo systemctl restart ${UNIT_NAME}" >&2
+  fi
+fi
 echo
 echo "安装完成。客户端「连接 → 中继模式」填写："
 echo "  地址 ws://<本机可达 IP>:${port}    密码见 sudo cat $ENV_FILE"

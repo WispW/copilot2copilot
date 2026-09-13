@@ -7,8 +7,6 @@ let state = null;
 let draft = null;
 /** 当前工作区档案（label 为空表示未打开工作区） */
 let wsState = { label: '', identity: {} };
-/** 是否为本工作区保存独立档案 */
-let wsOverride = false;
 
 const missingIds = new Set();
 
@@ -44,24 +42,78 @@ window.addEventListener('message', event => {
         label: state.workspaceLabel || '',
         identity: JSON.parse(JSON.stringify(state.workspaceIdentity || {})),
       };
-      wsOverride = Boolean(wsState.identity.id || wsState.identity.role || wsState.identity.scope);
       render();
     } else {
-      syncReadonlyFields();
+      mergeColleagues();
       if (state.workspaceLabel) {
         wsState.label = state.workspaceLabel;
       }
       renderStatus();
       renderInbox();
-      renderOnline();
-      // 热刷新时重绘档案区，但避免打断正在输入的内容
-      const focused = document.activeElement;
-      if (!focused || (focused.tagName !== 'INPUT' && focused.tagName !== 'SELECT')) {
+      // 重绘会重建 DOM，因此用焦点/光标保留包住，取代原先"聚焦就跳过重绘"的冻结做法
+      withFocusPreserved(() => {
         renderConn();
-      }
+        renderPeers();
+      });
+      renderScanHint();
     }
   }
 });
+
+/** 把服务端新出现的沟通方并入草稿（自动发现的结果）；只增不减，避免打断正在编辑的条目 */
+function mergeColleagues() {
+  const server = (state.config && state.config.colleagues) || [];
+  draft.colleagues = draft.colleagues || [];
+  const known = new Set(draft.colleagues.map(c => c.id));
+  server.forEach(sc => {
+    if (known.has(sc.id)) {
+      return;
+    }
+    draft.colleagues.push({
+      id: sc.id,
+      role: sc.role,
+      scope: sc.scope,
+      lanAddr: sc.lanAddr,
+      lanAddrSource: sc.lanAddrSource,
+      relayPeerId: sc.relayPeerId,
+      source: sc.source,
+      enabled: sc.enabled,
+    });
+  });
+  syncReadonlyFields();
+}
+
+/** 重建 DOM 前后保留输入焦点与光标位置，让实时刷新不再需要"跳过重绘" */
+function withFocusPreserved(renderFn) {
+  const active = document.activeElement;
+  const isInput = active && active.tagName === 'INPUT';
+  const key = isInput ? `${active.dataset.i ?? ''}|${active.dataset.f ?? ''}|${active.id ?? ''}` : '';
+  const start = isInput ? active.selectionStart : null;
+  const end = isInput ? active.selectionEnd : null;
+  renderFn();
+  if (!key) {
+    return;
+  }
+  const next = [...document.querySelectorAll('input')]
+    .find(el => `${el.dataset.i ?? ''}|${el.dataset.f ?? ''}|${el.id ?? ''}` === key);
+  if (!next) {
+    return;
+  }
+  next.focus();
+  if (typeof start === 'number' && typeof next.setSelectionRange === 'function') {
+    try {
+      next.setSelectionRange(start, end ?? start);
+    } catch {
+      // 数字/复选类输入不支持选区，忽略
+    }
+  }
+}
+
+/** 「扫描局域网」按钮只在局域网模式有意义 */
+function renderScanHint() {
+  const btn = $('btn-scan-lan');
+  btn.hidden = draft.mode !== 'lan';
+}
 
 /** 把服务端权威的只读字段（对方档案、自动学习的地址）同步进正在编辑的 draft */
 function syncReadonlyFields() {
@@ -104,6 +156,7 @@ function render() {
   renderPeers();
   renderInbox();
   renderBehavior();
+  renderScanHint();
 }
 
 function renderStatus() {
@@ -122,22 +175,15 @@ function renderConn() {
   $('relay-fields').hidden = cfg.mode !== 'relay';
   $('lan-port').value = cfg.lan.listenPort;
   $('relay-url').value = cfg.relay.url;
-  $('relay-myid').value = cfg.relay.myPeerId;
 
-  // 我的档案：默认档案 或 当前工作区独立档案
+  // 档案恒按工作区保存：本机多窗口因此各有各的 id
   const hasWorkspace = Boolean(wsState.label);
-  const overrideEl = $('ws-override');
-  overrideEl.disabled = !hasWorkspace;
-  overrideEl.checked = wsOverride && hasWorkspace;
-  $('ws-label').textContent = hasWorkspace ? wsState.label : '（未打开工作区，使用默认档案）';
-  const src = wsOverride && hasWorkspace ? (wsState.identity || {}) : cfg.identity;
-  const fallback = cfg.identity;
-  $('id-id').value = src.id ?? fallback.id ?? '';
-  $('id-role').value = src.role ?? fallback.role ?? '';
-  $('id-scope').value = src.scope ?? fallback.scope ?? '';
-  $('identity-hint').textContent = wsOverride && hasWorkspace
-    ? '正在编辑该工作区的独立档案；留空的项会继承默认档案'
-    : '正在编辑默认档案（所有未设置独立档案的工作区共用）';
+  $('ws-label').textContent = hasWorkspace ? wsState.label : '（未打开工作区，档案仍随本窗口保存）';
+  const src = wsState.identity || {};
+  $('id-id').value = src.id ?? '';
+  $('id-role').value = src.role ?? '';
+  $('id-scope').value = src.scope ?? '';
+  $('identity-hint').textContent = '本工作区档案按窗口独立保存；换一个工作区或另开一个窗口就是另一份档案。';
 
   $('my-addrs').textContent = (state.myAddresses || []).join('  ');
   const missing = state.identityMissing || [];
@@ -148,9 +194,9 @@ function renderConn() {
   }
 }
 
-/** 当前编辑目标：工作区独立档案 或 默认档案 */
+/** 档案编辑目标：恒为当前工作区档案 */
 function identityTarget() {
-  return wsOverride && wsState.label ? wsState.identity : draft.identity;
+  return wsState.identity;
 }
 
 function renderBehavior() {
@@ -162,7 +208,7 @@ function renderPeers() {
   const el = $('peers');
   const peers = draft.colleagues || [];
   if (peers.length === 0) {
-    el.innerHTML = '<p class="hint">尚未添加沟通方。填上对方的 id 与地址即可（对方的角色与负责内容会在连接后自动同步）。</p>';
+    el.innerHTML = '<p class="hint">暂无沟通方。连上中继或同一网段的对等端会被自动发现并加入；也可以点「添加」手工填写。</p>';
     return;
   }
   el.innerHTML = '';
@@ -170,21 +216,26 @@ function renderPeers() {
     const online = (state.onlineIds || []).includes(c.id);
     const profileReady = Boolean(c.role && c.scope);
     const selfConflict = Boolean(c.id) && c.id === draft.identity.id;
+    const disabled = c.enabled === false;
+    const auto = c.source === 'auto';
     const div = document.createElement('div');
-    div.className = 'peer';
+    div.className = disabled ? 'peer disabled' : 'peer';
     div.innerHTML = `
       <div class="peer-head">
         <b>${escapeHtml(c.id || '（未设置 id）')}</b>
         <span class="hint online ${online ? 'yes' : ''}">${online ? '在线' : '离线'}</span>
         <span class="hint">${profileReady ? '档案已同步' : '档案未同步'}</span>
+        ${auto ? '<span class="hint">自动发现</span>' : ''}
+        ${disabled ? '<span class="hint conflict">已停用</span>' : ''}
         ${selfConflict ? '<span class="hint conflict">对方 id 与我的 id 相同，这里要填对方的 id</span>' : ''}
         <span style="flex:1"></span>
         <button class="small" data-connect="${i}" title="立即尝试连接该同事">连接</button>
-        <button class="danger small" data-del="${i}">删除</button>
+        <button class="small" data-toggle="${i}" title="停用后不参与通信，也不会出现在模型可见名单里">${disabled ? '启用' : '停用'}</button>
+        ${auto ? '' : `<button class="danger small" data-del="${i}">删除</button>`}
       </div>
       <div class="grid">
-        <label>对方 id <input data-i="${i}" data-f="id" value="${escapeHtml(c.id)}" placeholder="与对方“我的档案”中的 id 一致"></label>
-        <label>局域网地址${c.lanAddrSource === 'auto' && c.lanAddr ? '（自动学习，可能不可回连）' : ''} <input data-i="${i}" data-f="lanAddr" value="${escapeHtml(c.lanAddr)}" placeholder="192.168.5.40:3901（可只填 IP）"></label>
+        <label>对方 id <input data-i="${i}" data-f="id" value="${escapeHtml(c.id)}" placeholder="与对方“本工作区档案”中的 id 一致"></label>
+        <label>局域网地址${c.lanAddrSource === 'auto' && c.lanAddr ? '（自动发现/学习，可能不可回连）' : ''} <input data-i="${i}" data-f="lanAddr" value="${escapeHtml(c.lanAddr)}" placeholder="192.168.5.40:3901（可只填 IP）"></label>
         <label>中继 id <input data-i="${i}" data-f="relayPeerId" value="${escapeHtml(c.relayPeerId)}" placeholder="对方在中继上的 id"></label>
         <label>角色（自动同步） <input value="${escapeHtml(c.role)}" readonly placeholder="等待对方同步"></label>
         <label>负责内容（自动同步） <input value="${escapeHtml(c.scope)}" readonly placeholder="等待对方同步"></label>
@@ -198,9 +249,16 @@ function renderPeers() {
         }
       });
     });
-    div.querySelector('button[data-del]').addEventListener('click', () => {
-      draft.colleagues.splice(i, 1);
-      renderPeers();
+    const delBtn = div.querySelector('button[data-del]');
+    if (delBtn) {
+      delBtn.addEventListener('click', () => {
+        draft.colleagues.splice(i, 1);
+        renderPeers();
+      });
+    }
+    div.querySelector('button[data-toggle]').addEventListener('click', () => {
+      const peer = draft.colleagues[i];
+      vscode.postMessage({ type: 'toggleColleague', peerId: peer.id, enabled: peer.enabled === false });
     });
     div.querySelector('button[data-connect]').addEventListener('click', event => {
       const btn = event.currentTarget;
@@ -221,11 +279,6 @@ function renderPeers() {
 
 function renderOnline() {
   if (!draft || $('tab-peers').hidden) {
-    return;
-  }
-  // 在线状态刷新：用户正在输入框中编辑时暂不重建，避免打断输入
-  const focused = document.activeElement;
-  if (focused && focused.tagName === 'INPUT') {
     return;
   }
   renderPeers();
@@ -264,12 +317,10 @@ function renderInbox() {
 }
 
 $('btn-save').addEventListener('click', () => {
-  const useWorkspace = wsOverride && Boolean(wsState.label);
   vscode.postMessage({
     type: 'save',
     config: draft,
-    identity: useWorkspace ? wsState.identity : undefined,
-    workspaceOverride: useWorkspace,
+    identity: wsState.identity,
     token: $('token').value,
   });
   $('token').value = '';
@@ -286,6 +337,18 @@ $('btn-test').addEventListener('click', () => {
 
 $('btn-logs').addEventListener('click', () => {
   vscode.postMessage({ type: 'showLogs' });
+});
+
+$('btn-scan-lan').addEventListener('click', () => {
+  vscode.postMessage({ type: 'scanLan' });
+});
+
+$('btn-save-template').addEventListener('click', () => {
+  vscode.postMessage({ type: 'saveTemplate' });
+});
+
+$('btn-reset-loop').addEventListener('click', () => {
+  vscode.postMessage({ type: 'resetLoopGuard' });
 });
 
 $('btn-clear-history').addEventListener('click', () => {
@@ -311,6 +374,7 @@ document.querySelectorAll('input[name="mode"]').forEach(el => {
     draft.mode = el.value;
     $('lan-fields').hidden = draft.mode !== 'lan';
     $('relay-fields').hidden = draft.mode !== 'relay';
+    renderScanHint();
   });
 });
 
@@ -320,9 +384,6 @@ $('lan-port').addEventListener('input', () => {
 $('relay-url').addEventListener('input', () => {
   draft.relay.url = $('relay-url').value.trim();
 });
-$('relay-myid').addEventListener('input', () => {
-  draft.relay.myPeerId = $('relay-myid').value.trim();
-});
 $('id-id').addEventListener('input', () => {
   identityTarget().id = $('id-id').value.trim();
 });
@@ -331,13 +392,6 @@ $('id-role').addEventListener('input', () => {
 });
 $('id-scope').addEventListener('input', () => {
   identityTarget().scope = $('id-scope').value.trim();
-});
-$('ws-override').addEventListener('change', () => {
-  wsOverride = $('ws-override').checked;
-  if (wsOverride && wsState.label && !wsState.identity) {
-    wsState.identity = {};
-  }
-  renderConn();
 });
 $('wait-timeout').addEventListener('input', () => {
   draft.behavior.waitTimeoutSec = Number($('wait-timeout').value) || 90;

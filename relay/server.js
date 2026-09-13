@@ -11,7 +11,9 @@
  *   LOG_LEVEL           error | warn | info | debug，默认 info
  *
  * 端点：/  存活文本；/healthz  JSON 状态（供探针使用，不含任何 id）
+ *       /peers  在线 id 列表（需令牌），供客户端连接前自查 id 是否被占用
  * 职责：按 to 字段路由消息；目标不在线时暂存（每目标最多 200 条）；广播在线名单 presence。
+ * 同 id：已有在线连接时拒绝新连接（4005），不做顶替，避免多实例互相抢连接。
  */
 'use strict';
 
@@ -125,6 +127,18 @@ const server = http.createServer((req, res) => {
     res.end(`${body}\n`);
     return;
   }
+  // 在线名单：带令牌查询，供客户端连接前检查 id 是否已被占用（不含任何档案信息）
+  if (pathname === '/peers') {
+    if (!tokenMatches(req.headers.authorization || '')) {
+      log('warn', '拒绝查询在线名单：令牌不正确', { ip: remoteOf(req) });
+      res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' });
+      res.end('{"error":"unauthorized"}\n');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(`${JSON.stringify({ peers: [...peers.keys()] })}\n`);
+    return;
+  }
   if (pathname === '/') {
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('talk2copilot relay ok\n');
@@ -160,9 +174,15 @@ wss.on('connection', (ws, req) => {
   }
 
   const previous = peers.get(id);
+  if (previous && previous !== ws && previous.readyState === previous.OPEN) {
+    // 拒绝新连接而不是顶掉旧的：同 id 多实例（如同一台机器开了多个窗口）时
+    // 由服务端做权威判定，避免双方互相顶下线、每秒抢一次连接
+    log('warn', '拒绝连接：该 id 已在线', { id, ip: remoteOf(req) });
+    ws.close(4005, 'id in use');
+    return;
+  }
   if (previous && previous !== ws) {
-    log('info', `同一 id 的新连接接入，断开旧连接`, { id });
-    previous.close(4004, 'replaced by new connection');
+    log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });
   }
   peers.set(id, ws);
   log('info', `${id} 已上线`, { online: peers.size, ip: remoteOf(req) });

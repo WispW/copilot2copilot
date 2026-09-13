@@ -22,4 +22,6 @@ export interface Transport {
   isOnline(peerId: string): boolean;
   /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */
   sendOfflineNotice(): void;
+  /** 立即做一轮自动发现扫描（仅局域网模式实现；中继模式由服务端推送在线名单） */
+  scanDiscovered?(): void;
 }

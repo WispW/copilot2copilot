@@ -1,15 +1,15 @@
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
 import { ColleagueProfile } from './protocol';
-import { AppConfig, ColleagueConfig, HistoryItem, Store, WorkspaceIdentity } from './store';
+import { AppConfig, ColleagueConfig, HistoryItem, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store, WorkspaceIdentity } from './store';
 import { TransportStatus } from './transport/types';
 
 interface PanelState {
-  /** 全局配置；其中 identity 为“默认档案”，供编辑默认值时使用 */
+  /** 全局配置；其中 identity 为“模板档案”，只用于给新工作区预填角色与负责内容 */
   config: AppConfig;
-  /** 当前生效档案（已合并工作区覆盖） */
+  /** 当前生效档案（恒为工作区档案） */
   effectiveIdentity: ColleagueProfile;
-  /** 当前工作区的独立档案（未设置时为空对象） */
+  /** 当前工作区的档案 */
   workspaceIdentity: WorkspaceIdentity;
   /** 当前工作区名（无工作区时为空串） */
   workspaceLabel: string;
@@ -25,6 +25,8 @@ interface PanelDeps {
   getOnlineIds(): string[];
   restart(): Promise<void>;
   connectPeer(peerId: string): void;
+  /** 立即做一轮局域网自动发现（中继模式为服务端推送，无需调用） */
+  scanLan(): void;
 }
 
 /** 界面草稿里的沟通方：带一个仅前端使用的“地址被编辑过”标记 */
@@ -103,7 +105,7 @@ export class ConsolePanel {
 
   private buildState(): PanelState {
     return {
-      config: { ...this.store.config, identity: this.store.defaultIdentity },
+      config: { ...this.store.config, identity: this.store.templateIdentity },
       effectiveIdentity: this.store.identity,
       workspaceIdentity: this.store.workspaceIdentity,
       workspaceLabel: this.store.workspaceLabel(),
@@ -125,15 +127,15 @@ export class ConsolePanel {
       config?: AppConfig;
       token?: string;
       peerId?: string;
+      enabled?: boolean;
       identity?: ColleagueProfile;
-      workspaceOverride?: boolean;
     };
     switch (m.type) {
       case 'ready':
         this.postState();
         break;
       case 'save': {
-        log(`[panel] 保存配置：模式=${m.config?.mode ?? '(未提供)'} 同事数=${m.config?.colleagues?.length ?? '?'} 工作区独立档案=${m.workspaceOverride ? '是' : '否'}`);
+        log(`[panel] 保存配置：模式=${m.config?.mode ?? '(未提供)'} 同事数=${m.config?.colleagues?.length ?? '?'}`);
         if (m.config) {
           // 对方档案（role/scope）以 store 中已同步的值为准，避免界面旧快照把它覆盖成空
           const merged: AppConfig = {
@@ -156,16 +158,14 @@ export class ConsolePanel {
           };
           await this.store.updateConfig(merged);
         }
-        await this.store.setWorkspaceIdentity(m.workspaceOverride ? m.identity : undefined);
+        await this.store.setWorkspaceIdentity(m.identity ?? {});
         if (typeof m.token === 'string' && m.token.trim().length > 0) {
           await this.store.setToken(m.token.trim());
         }
         await this.deps.restart();
         this.postState(true);
         void vscode.window.showInformationMessage(
-          m.workspaceOverride
-            ? 'Copilot2Copilot：已保存为该工作区的独立档案并应用'
-            : 'Copilot2Copilot 配置已保存并应用',
+          `Copilot2Copilot：已保存本工作区档案（id=${this.store.identity.id || '未填'}）并应用`,
         );
         break;
       }
@@ -178,6 +178,34 @@ export class ConsolePanel {
       case 'clearHistory':
         await this.store.clearMessages();
         break;
+      case 'resetLoopGuard': {
+        this.store.resetLoopGuard();
+        log('[panel] 已重置熔断计数');
+        void vscode.window.showInformationMessage('Copilot2Copilot：熔断计数已重置，可以与同事继续通信。');
+        this.postState();
+        break;
+      }
+      case 'toggleColleague': {
+        if (typeof m.peerId === 'string' && m.peerId) {
+          await this.store.setColleagueEnabled(m.peerId, m.enabled === true);
+          log(`[panel] ${m.enabled === true ? '启用' : '停用'}沟通方 ${m.peerId}`);
+          this.postState();
+        }
+        break;
+      }
+      case 'scanLan': {
+        log('[panel] 手动触发局域网扫描');
+        this.deps.scanLan();
+        void vscode.window.showInformationMessage('Copilot2Copilot：已开始扫描局域网，发现的对等端会自动加入沟通方列表。');
+        break;
+      }
+      case 'saveTemplate': {
+        await this.store.saveTemplateFromCurrent();
+        log('[panel] 已把当前档案的角色/负责内容存为模板');
+        void vscode.window.showInformationMessage('Copilot2Copilot：已把当前角色与负责内容存为模板，供新工作区预填（不含 id）。');
+        this.postState();
+        break;
+      }
       case 'uiError':
         log(`[panel] 界面脚本错误：${(m as { message?: string }).message ?? '(未知)'}`);
         break;
@@ -250,20 +278,20 @@ export class ConsolePanel {
     </div>
     <div id="relay-fields">
       <label>中继地址 <input id="relay-url" placeholder="wss://relay.example.com"></label>
-      <label>我的中继 id <input id="relay-myid"></label>
       <label>中继令牌（可选） <input id="token" type="password" placeholder="留空表示保持不变"></label>
       <p class="hint">令牌保存在系统密钥库（SecretStorage）。局域网模式面向可信内网，只校验对方 id，不校验令牌。</p>
+      <p class="hint">中继 id 即下面的「档案 id」，本机每个窗口各用各的档案，因此不会互相顶下线。</p>
     </div>
-    <h2>我的档案（对方在其 Copilot 中可见）</h2>
-    <p class="hint">当前工作区：<code id="ws-label"></code></p>
+    <h2>本工作区档案（对方在其 Copilot 中可见）</h2>
+    <p class="hint">当前工作区：<code id="ws-label"></code>。档案按工作区保存，本机多个窗口因此可以各有各的 id。</p>
     <div id="identity-warning" class="banner" hidden></div>
-    <label class="row"><input id="ws-override" type="checkbox"> 本工作区使用独立档案（不勾选则编辑“默认档案”，对所有工作区生效）</label>
     <div class="grid">
       <label>id <input id="id-id" placeholder="唯一标识，双方约定一致"></label>
       <label>角色 <input id="id-role" placeholder="如：后端工程师"></label>
       <label>负责内容 <input id="id-scope" placeholder="如：订单服务、支付网关"></label>
     </div>
     <p class="hint" id="identity-hint"></p>
+    <p class="hint">请把上面的 id 告诉同事，让他们填到「沟通方 → 中继 id」里。</p>
   </section>
   <section id="tab-peers" hidden>
     <div class="section-head">
@@ -283,6 +311,12 @@ export class ConsolePanel {
     <label>等待回复默认超时（秒） <input id="wait-timeout" type="number" min="5" max="180"></label>
     <label>历史消息保留条数 <input id="history-limit" type="number" min="20" max="1000"></label>
     <div class="section-head"><h2>维护</h2></div>
+    <button id="btn-scan-lan">扫描局域网</button>
+    <p class="hint">立即扫描本机所在网段，发现同样运行本扩展的设备并自动加入沟通方列表（平时启动后与每 60 秒也会自动扫描一次）。中继模式下无需扫描，中继会直接下发在线名单。</p>
+    <button id="btn-save-template">把当前角色/负责内容存为模板</button>
+    <p class="hint">模板用于给以后新开的工作区预填角色与负责内容（<strong>不含 id</strong>，避免新窗口与现有窗口撞名）。</p>
+    <button id="btn-reset-loop">重置熔断计数</button>
+    <p class="hint">与同一位同事在 ${LOOP_WINDOW_MS / 60000} 分钟内的往来达到 ${LOOP_MESSAGE_LIMIT} 条时会自动中止（防止两端无限对话）。点此立即重新计数；窗口随时间滑动，稍后也会自动恢复。</p>
     <button id="btn-clear-history" class="danger">清空消息历史</button>
   </section>
 </main>

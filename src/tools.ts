@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { log } from './logger';
 import { makeEnvelope, MessageEnvelope } from './protocol';
-import { Store } from './store';
+import { colleagueEnabled, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
 import { Transport } from './transport/types';
 
 function json(value: unknown): vscode.LanguageModelToolResult {
@@ -110,8 +110,18 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
         ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
         : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单。`);
     }
+    // 停用优先于档案检查：这样报错说的是真正的原因（用户主动停用，而非等待同步）
+    if (!colleagueEnabled(colleague)) {
+      throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
+    }
     if (!store.hasPeerProfile(colleague)) {
       throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持连接（可在配置界面点击该沟通方的“连接”按钮）；同步成功后即可发送。`);
+    }
+
+    // 熔断：窗口内与同一同事的往来条数达上限时拒绝继续发送，避免两端无人值守地互相追问
+    if (store.isLoopSuspected(colleague.id)) {
+      log(`[tool] send_message 被熔断阻止：${colleague.id} 窗口内往来已达 ${store.recentMessageCount(colleague.id)} 条`);
+      throw new Error(`最近 ${LOOP_WINDOW_MS / 60000} 分钟内与 ${colleague.id} 的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话以免两端无限对话。请把已获得的信息交给本机用户；若确需继续，可由用户在配置界面「维护」里重置熔断计数。`);
     }
 
     log(`[tool] send_message → ${colleague.id}（等待=${input.wait_seconds ?? 0}s，片段=${input.snippet ? '有' : '无'}）`);
@@ -196,6 +206,22 @@ export class WaitReplyTool implements vscode.LanguageModelTool<WaitReplyInput> {
     if (!record || record.direction !== 'out') {
       throw new Error(`找不到编号为 ${input.request_id} 的已发送消息，请核对 request_id。`);
     }
+    if (!colleagueEnabled(store.findColleague(record.peerId))) {
+      return json({
+        status: 'blocked',
+        request_id: input.request_id,
+        hint: `沟通方 ${record.peerId} 已被停用，不会再有回复。请不要再等待；如需继续，可在配置界面启用该沟通方。`,
+      });
+    }
+    // 熔断后对方不会再被自动唤醒，继续等待必然空转：直接给出终止信号
+    if (store.isLoopSuspected(record.peerId)) {
+      log(`[tool] wait_reply 终止：${record.peerId} 窗口内往来已达 ${store.recentMessageCount(record.peerId)} 条`);
+      return json({
+        status: 'blocked',
+        request_id: input.request_id,
+        hint: `与 ${record.peerId} 在 ${LOOP_WINDOW_MS / 60000} 分钟内的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话，对方不会再回复。请不要再等待或重发，直接把已获得的信息交给本机用户；如需继续，可由用户在配置界面「维护」里重置熔断计数。`,
+      });
+    }
     if (record.done) {
       return json({ status: 'ok', request_id: input.request_id, reply: record.replyText });
     }
@@ -260,7 +286,13 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
       throw new Error(`找不到编号为 ${input.request_id} 的同事消息（或该消息不是你收到的）。请用 talk2copilot_list_inbox 核对。`);
     }
     const colleague = store.findColleague(original.peerId);
-    if (!colleague || !store.hasPeerProfile(colleague)) {
+    if (!colleague) {
+      throw new Error(`找不到沟通方 ${original.peerId}，无法回复。`);
+    }
+    if (!colleagueEnabled(colleague)) {
+      throw new Error(`沟通方 ${colleague.id} 已被停用，不能回复。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
+    }
+    if (!store.hasPeerProfile(colleague)) {
       throw new Error(`对方（${original.peerId}）的档案尚未同步（角色/负责内容），暂不能回复。请确认对方已完善档案并保持连接。`);
     }
     log(`[tool] reply_message → ${original.peerId}（request_id=${input.request_id}）`);
@@ -286,7 +318,9 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<Record<strin
   async invoke(): Promise<vscode.LanguageModelToolResult> {
     const { store, getTransport } = this.deps;
     const transport = getTransport();
-    const colleagues = store.config.colleagues.map(c => ({
+    const all = store.config.colleagues;
+    // 停用的沟通方不进入模型可见名单（用户明确要求"不启用就不把信息传给模型"）
+    const colleagues = all.filter(colleagueEnabled).map(c => ({
       id: c.id,
       role: c.role,
       scope: c.scope,
@@ -297,7 +331,13 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<Record<strin
       mode: store.config.mode === 'relay' ? '中继' : '局域网',
       my_id: store.config.identity.id,
       colleagues,
-      ...(colleagues.length === 0 ? { note: '尚未配置沟通方，请先在 Copilot2Copilot 配置界面添加同事。' } : {}),
+      ...(colleagues.length === 0
+        ? {
+          note: all.length === 0
+            ? '当前没有可用沟通方：连上中继或同一网段的对等端会被自动发现并加入。'
+            : '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。',
+        }
+        : {}),
     });
   }
 }
