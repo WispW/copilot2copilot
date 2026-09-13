@@ -40,6 +40,15 @@ export interface AppConfig {
   colleagues: ColleagueConfig[];
 }
 
+/** 文件通道：本条历史记录关联的文件 */
+export interface HistoryFile {
+  name: string;
+  size: number;
+  sha256: string;
+  /** in：本机落盘路径；out：本机源文件路径 */
+  path: string;
+}
+
 /** 一条历史消息：direction=in 为收到，out 为发出 */
 export interface HistoryItem {
   id: string;
@@ -52,6 +61,8 @@ export interface HistoryItem {
   /** in：是否已回复；out：是否已收到回复 */
   done: boolean;
   replyText?: string;
+  /** 通过文件通道交接的文件（此时 id = 该次传输编号） */
+  file?: HistoryFile;
 }
 
 function defaultConfig(): AppConfig {
@@ -213,6 +224,20 @@ export class Store {
       return '';
     }
     return folders.length === 1 ? folders[0].name : `${folders[0].name} 等 ${folders.length} 个工作区`;
+  }
+
+  /** 文件收件箱目录：同事发来的文件落在这里（不进入工作区） */
+  filesDir(): string {
+    const dir = path.join(this.context.globalStorageUri.fsPath, 'files');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /** 传输中转目录：接收中的 .part 文件，校验通过后移入收件箱 */
+  transfersDir(): string {
+    const dir = path.join(this.context.globalStorageUri.fsPath, 'transfers');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
   }
 
   /** 本机可被回连的局域网地址（含监听端口），随档案声明给同事并在面板展示 */

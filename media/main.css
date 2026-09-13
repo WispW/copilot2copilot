@@ -259,3 +259,11 @@ details summary {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.file {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: var(--vscode-textCodeBlock-background);
+  border-left: 2px solid var(--vscode-focusBorder);
+  word-break: break-word;
+}

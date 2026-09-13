@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { FileHub } from './files';
 import { Injector } from './injector';
 import { disposeLogger, log, logError, showLogs } from './logger';
 import { ConsolePanel } from './panel';
@@ -16,6 +17,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const store = new Store(context);
   const waiters = new ReplyWaiter();
   const injector = new Injector(store, waiters, context.extensionUri);
+  const fileHub = new FileHub(store, () => currentTransport, arrival => injector.injectFile(arrival));
+  fileHub.cleanupStaleTransferFiles();
   let status: TransportStatus = { state: 'stopped', detail: '未启动' };
   let transportDisposables: vscode.Disposable[] = [];
 
@@ -36,7 +39,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const transport: Transport = store.config.mode === 'relay' ? new RelayTransport(store) : new LanTransport(store);
     currentTransport = transport;
     transportDisposables.push(
-      transport.onMessage(env => void injector.handleIncoming(env)),
+      transport.onMessage(env => {
+        // 文件通道由 FileHub 接管，其余信封交给消息注入
+        if (!fileHub.handle(env)) {
+          void injector.handleIncoming(env);
+        }
+      }),
       transport.onStatus(s => {
         log(`状态：${s.state} · ${s.detail}`);
         status = s;
@@ -58,7 +66,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     scanLan: () => currentTransport?.scanDiscovered?.(),
   });
 
-  const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport };
+  const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport, fileHub };
   registerTools(context, deps);
 
   context.subscriptions.push(

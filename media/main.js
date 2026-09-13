@@ -150,6 +150,17 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function formatSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) {
+    return `${n} 字节`;
+  }
+  if (n < 1048576) {
+    return `${(n / 1024).toFixed(1)} KiB`;
+  }
+  return `${(n / 1048576).toFixed(2)} MiB`;
+}
+
 function render() {
   renderStatus();
   renderConn();
@@ -289,16 +300,21 @@ function renderInbox() {
     const snippet = m.snippet
       ? `<details><summary>代码片段</summary><pre class="body">${escapeHtml(m.snippet)}</pre></details>`
       : '';
+    const file = m.file
+      ? `<div class="file">文件：<b>${escapeHtml(m.file.name)}</b>（${formatSize(m.file.size)}，sha256 ${escapeHtml(String(m.file.sha256 || '').slice(0, 12))}…）${m.direction === 'in' && m.file.path ? `<br>已保存到：<code>${escapeHtml(m.file.path)}</code>` : ''}</div>`
+      : '';
     const reply = m.direction === 'out' && m.replyText
       ? `<div class="reply">对方回复：${escapeHtml(m.replyText)}</div>`
       : '';
+    const body = m.text ? `<pre class="body">${escapeHtml(m.text)}</pre>` : '';
     return `<div class="msg ${m.direction}">
       <div class="msg-head">
         <span class="badge">${dir}</span>
         <b>${escapeHtml(m.peerId)}</b>
         <span class="hint">${time} · ${status} · ${escapeHtml(m.id)}</span>
       </div>
-      <pre class="body">${escapeHtml(m.text)}</pre>
+      ${body}
+      ${file}
       ${snippet}
       ${reply}
     </div>`;
@@ -326,6 +342,10 @@ $('btn-logs').addEventListener('click', () => {
 
 $('btn-scan-lan').addEventListener('click', () => {
   vscode.postMessage({ type: 'scanLan' });
+});
+
+$('btn-open-files').addEventListener('click', () => {
+  vscode.postMessage({ type: 'openFilesDir' });
 });
 
 $('btn-save-template').addEventListener('click', () => {

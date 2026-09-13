@@ -171,6 +171,19 @@ export class ConsolePanel {
       case 'clearHistory':
         await this.store.clearMessages();
         break;
+      case 'openFilesDir': {
+        const dir = this.store.filesDir();
+        log(`[panel] 打开文件收件目录 ${dir}`);
+        try {
+          // openExternal 被系统拒绝时返回 false（不抛异常），两种失败都要给出路径提示
+          if (!(await vscode.env.openExternal(vscode.Uri.file(dir)))) {
+            throw new Error('系统未接受打开请求');
+          }
+        } catch {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：无法自动打开收件目录，路径为 ${dir}`);
+        }
+        break;
+      }
       case 'resetLoopGuard': {
         this.store.resetLoopGuard();
         log('[panel] 已重置熔断计数');
@@ -287,7 +300,8 @@ export class ConsolePanel {
     <div id="peers"></div>
   </section>
   <section id="tab-inbox" hidden>
-    <div class="section-head"><h2>收件箱</h2></div>
+    <div class="section-head"><h2>收件箱</h2><button id="btn-open-files">打开收件目录</button></div>
+    <p class="hint">同事发来的文件保存在扩展私有目录（不进入工作区），点上面的按钮可在文件管理器中打开。</p>
     <div id="inbox"></div>
   </section>
   <section id="tab-behavior" hidden>
