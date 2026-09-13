@@ -271,12 +271,19 @@ export class Store {
     await this.updateConfig({ ...this.cfg, identity: { ...this.cfg.identity, role, scope } });
   }
 
-  /** 按 id 或中继 id 找沟通方；未指定 id 且只有一位时返回唯一那位 */
+  /**
+   * 按 id 或中继 id 找沟通方；未指定 id 且只有一位时返回唯一那位。
+   * 指向本窗口自己的条目一律不可用——配置是全局的（globalStorage）、身份是按窗口的，
+   * 别的窗口做自动发现时可能把本窗口登记进来（id 或中继 id 命中自己都算）。
+   */
   findColleague(id?: string): ColleagueConfig | undefined {
+    const mine = this.identity.id;
+    const otherOf = (c: ColleagueConfig): boolean => c.id !== mine && c.relayPeerId !== mine;
     if (id) {
-      return this.cfg.colleagues.find(c => c.id === id || c.relayPeerId === id);
+      return this.cfg.colleagues.find(c => (c.id === id || c.relayPeerId === id) && otherOf(c));
     }
-    return this.cfg.colleagues.length === 1 ? this.cfg.colleagues[0] : undefined;
+    const others = this.cfg.colleagues.filter(otherOf);
+    return others.length === 1 ? others[0] : undefined;
   }
 
   async updateConfig(next: AppConfig): Promise<void> {
@@ -358,6 +365,51 @@ export class Store {
     this.cfg.colleagues[idx] = { ...c, ...merged };
     await this.updateConfig(this.cfg);
     return true;
+  }
+
+  /**
+   * 中继下发的在线档案目录（中继是档案的权威来源）：登记/更新对应 Copilot 的角色与负责内容。
+   * 只动档案字段——本地地址、中继 id、启用状态、自动/手工来源保持不变；离线条目不受影响。
+   */
+  async applyRelayDirectory(list: ColleagueProfile[]): Promise<boolean> {
+    let changed = false;
+    for (const profile of list) {
+      // 目录来自中继，仍按外部输入校验：只接受字符串并限长
+      if (typeof profile?.id !== 'string') {
+        continue;
+      }
+      const id = profile.id.trim().slice(0, 128);
+      if (!id || id === this.identity.id) {
+        continue;
+      }
+      const role = (typeof profile.role === 'string' ? profile.role : '').slice(0, 200);
+      const scope = (typeof profile.scope === 'string' ? profile.scope : '').slice(0, 200);
+      const idx = this.cfg.colleagues.findIndex(c => c.id === id || c.relayPeerId === id);
+      if (idx < 0) {
+        this.cfg.colleagues.push({
+          id,
+          role,
+          scope,
+          lanAddr: '',
+          lanAddrSource: 'auto',
+          relayPeerId: id,
+          source: 'auto',
+          enabled: true,
+        });
+        changed = true;
+        continue;
+      }
+      const c = this.cfg.colleagues[idx];
+      if (c.role === role && c.scope === scope) {
+        continue;
+      }
+      this.cfg.colleagues[idx] = { ...c, role, scope };
+      changed = true;
+    }
+    if (changed) {
+      await this.updateConfig(this.cfg);
+    }
+    return changed;
   }
 
   /** 启用 / 停用某位沟通方（停用后不参与工具层与自动注入） */

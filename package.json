@@ -43,15 +43,20 @@
     "languageModelTools": [
       {
         "name": "talk2copilot_list_colleagues",
-        "displayName": "查看沟通方列表",
-        "modelDescription": "列出已配置的沟通方（同事），返回每位同事的 id、姓名、角色、负责内容与在线状态。当你不确定某个问题应该问谁时，先调用此工具查看名单，再调用 talk2copilot_send_message 发送。不需要参数。",
-        "userDescription": "列出已配置的沟通方及其分工",
+        "displayName": "查看 Copilot 列表",
+        "modelDescription": "列出当前**在线**的 Copilot（已配置的对端），返回每个 Copilot 的 id、角色与负责内容。当你不确定某个问题应该问谁时，先调用此工具查看列表，再调用 talk2copilot_send_message 发送。默认只列在线条目——离线的、已停用的、以及指向本机自己的条目都不会出现；确需查看全部已配置条目时传 include_offline=true。",
+        "userDescription": "列出在线的 Copilot 列表",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "list_colleagues",
         "icon": "$(organization)",
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "include_offline": {
+              "type": "boolean",
+              "description": "为 true 时连离线条目一起返回（已停用与指向本机自己的条目仍不会出现）。缺省只返回在线的 Copilot。"
+            }
+          },
           "required": []
         }
       },

@@ -22,9 +22,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let status: TransportStatus = { state: 'stopped', detail: '未启动' };
   let transportDisposables: vscode.Disposable[] = [];
 
-  /** 在线同事 id：状态栏与面板共用的实时数据源 */
+  /**
+   * 在线同事 id：状态栏与列表共用的实时数据源。
+   * 只排除"指向自己"的条目；**不能**在这里排除已停用条目——列表用它判断"是否在线"，
+   * 一旦剔除，用户点「停用」会让整行消失且无法再启用（停用的对端本身仍是在线的）。
+   */
   const getOnlineIds = (): string[] =>
-    store.config.colleagues.filter(c => currentTransport?.isOnline(c.id)).map(c => c.id);
+    store.config.colleagues
+      .filter(c => c.id !== store.config.identity.id && c.relayPeerId !== store.config.identity.id)
+      .filter(c => currentTransport?.isOnline(c.id))
+      .map(c => c.id);
 
   const statusBar = new StatusBar(store, getOnlineIds);
   context.subscriptions.push(statusBar);

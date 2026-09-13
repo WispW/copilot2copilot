@@ -115,7 +115,7 @@ function renderScanHint() {
   btn.hidden = draft.mode !== 'lan';
 }
 
-/** 把服务端权威的只读字段（对方档案、自动学习的地址）同步进正在编辑的 draft */
+/** 把服务端权威的只读字段（对方档案、自动学习的地址、停用状态）同步进正在编辑的 draft */
 function syncReadonlyFields() {
   (state.config.colleagues || []).forEach(sc => {
     const dc = draft.colleagues.find(c => c.id === sc.id);
@@ -124,6 +124,8 @@ function syncReadonlyFields() {
     }
     dc.role = sc.role;
     dc.scope = sc.scope;
+    // 停用状态以服务端为准：否则点「停用」后草稿不更新，界面永远停在原状态
+    dc.enabled = sc.enabled !== false;
     // 用户没动过地址就跟随服务端，否则过期的草稿会把自动纠正过的地址又写回去
     if (!dc.lanAddrEdited) {
       dc.lanAddr = sc.lanAddr;
@@ -217,14 +219,22 @@ function renderBehavior() {
 
 function renderPeers() {
   const el = $('peers');
-  const peers = draft.colleagues || [];
-  if (peers.length === 0) {
-    el.innerHTML = '<p class="hint">暂无沟通方。连上中继或同一网段的对等端会被自动发现并加入；也可以点「添加」手工填写。</p>';
+  const all = draft.colleagues || [];
+  const onlineIds = new Set(state?.onlineIds || []);
+  const savedIds = new Set(((state && state.config && state.config.colleagues) || []).map(c => c.id));
+  const myId = (state && state.effectiveIdentity && state.effectiveIdentity.id) || '';
+  // 列表只显示在线条目：离线的（自动发现或手工添加）一律从列表消失；
+  // 指向自己（id 或中继 id 命中自己）的条目也不显示；
+  // 例外：尚未保存的新条目、以及正在改 id 的条目（新 id 还没保存）仍显示，否则会没法编辑
+  const rows = all.map((c, i) => ({ c, i }))
+    .filter(({ c }) => c.id !== myId && c.relayPeerId !== myId)
+    .filter(({ c }) => c.isNew === true || onlineIds.has(c.id) || !savedIds.has(c.id));
+  if (rows.length === 0) {
+    el.innerHTML = '<p class="hint">当前没有在线的 Copilot。连上中继或同一网段的对等端会自动出现在这里；离线的条目会自动从列表消失，点「添加」可手工填写。</p>';
     return;
   }
   el.innerHTML = '';
-  peers.forEach((c, i) => {
-    const online = (state.onlineIds || []).includes(c.id);
+  rows.forEach(({ c, i }) => {
     const profileReady = Boolean(c.role && c.scope);
     const selfConflict = Boolean(c.id) && c.id === draft.identity.id;
     const disabled = c.enabled === false;
@@ -234,7 +244,6 @@ function renderPeers() {
     div.innerHTML = `
       <div class="peer-head">
         <b>${escapeHtml(c.id || '（未设置 id）')}</b>
-        <span class="hint online ${online ? 'yes' : ''}">${online ? '在线' : '离线'}</span>
         <span class="hint">${profileReady ? '档案已同步' : '档案未同步'}</span>
         ${auto ? '<span class="hint">自动发现</span>' : ''}
         ${disabled ? '<span class="hint conflict">已停用</span>' : ''}
@@ -271,6 +280,12 @@ function renderPeers() {
     }
     div.querySelector('button[data-toggle]').addEventListener('click', () => {
       const peer = draft.colleagues[i];
+      if (peer.isNew) {
+        // 未保存的新条目还没有服务端记录：只改草稿，随「保存并应用」一起生效
+        peer.enabled = peer.enabled === false;
+        renderPeers();
+        return;
+      }
       vscode.postMessage({ type: 'toggleColleague', peerId: peer.id, enabled: peer.enabled === false });
     });
     el.appendChild(div);
@@ -367,6 +382,8 @@ $('btn-add-peer').addEventListener('click', () => {
     scope: '',
     lanAddr: '',
     relayPeerId: '',
+    // 仅供前端：标记"尚未保存的新条目"，使其不因不在线而被隐藏
+    isNew: true,
   });
   renderPeers();
 });

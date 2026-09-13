@@ -193,6 +193,9 @@ export class RelayTransport implements Transport {
       this.retryMs = 1000;
       this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
       const identity = this.store.config.identity;
+      // 向中继上报自己的档案（to='server' 由中继登记后广播给所有在线设备），中继是档案的权威来源
+      log(`[relay] 向中继上报档案（角色=${identity.role || '空'} 负责=${identity.scope || '空'}）`);
+      ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: 'server', profile: identity })));
       for (const c of this.store.config.colleagues) {
         if (c.relayPeerId && colleagueEnabled(c)) {
           log(`[relay] 向 ${c.relayPeerId} 发送档案声明`);
@@ -259,7 +262,11 @@ export class RelayTransport implements Transport {
     }
     if (parsed.kind === 'presence') {
       this.onlinePeers = new Set(parsed.peers ?? []);
-      log(`[relay] 在线名单更新：${[...this.onlinePeers].join(', ') || '(空)'}`);
+      log(`[relay] 在线名单更新：${[...this.onlinePeers].join(', ') || '(空)'}（含档案 ${parsed.profiles?.length ?? 0} 份）`);
+      if (Array.isArray(parsed.profiles) && parsed.profiles.length > 0) {
+        // 中继是档案的权威来源：先按目录登记/更新，再补齐只有 id、未上报档案的在线设备
+        void this.store.applyRelayDirectory(parsed.profiles);
+      }
       void this.registerDiscoveredPeers();
       this.refreshPresenceStatus();
       return;

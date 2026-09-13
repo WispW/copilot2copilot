@@ -49,6 +49,11 @@ export interface MessageEnvelope {
   requestId?: string;
   /** presence：中继广播的在线成员名单（仅由中继发往客户端） */
   peers?: string[];
+  /**
+   * presence：中继广播的在线档案目录（仅由中继发往客户端）。
+   * peers 仍是判定在线的依据；未上报档案的在线设备不会出现在这里。
+   */
+  profiles?: ColleagueProfile[];
   /** 文件通道：一次交接的编号，同时用作收件箱中该条记录的 id */
   transferId?: string;
   /** file-offer：待传文件的元数据 */

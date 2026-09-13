@@ -202,7 +202,7 @@ export class ConsolePanel {
       case 'scanLan': {
         log('[panel] 手动触发局域网扫描');
         this.deps.scanLan();
-        void vscode.window.showInformationMessage('Copilot2Copilot：已开始扫描局域网，发现的对等端会自动加入沟通方列表。');
+        void vscode.window.showInformationMessage('Copilot2Copilot：已开始扫描局域网，发现的对等端会自动加入 Copilot 列表。');
         break;
       }
       case 'saveTemplate': {
@@ -258,7 +258,7 @@ export class ConsolePanel {
 </header>
 <nav id="tabs">
   <button data-tab="conn" class="active">连接</button>
-  <button data-tab="peers">沟通方</button>
+  <button data-tab="peers">Copilot 列表</button>
   <button data-tab="inbox">收件箱</button>
   <button data-tab="behavior">行为</button>
 </nav>
@@ -289,14 +289,14 @@ export class ConsolePanel {
       <label>负责内容 <input id="id-scope" placeholder="如：订单服务、支付网关"></label>
     </div>
     <p class="hint" id="identity-hint"></p>
-    <p class="hint">请把上面的 id 告诉同事，让他们填到「沟通方 → 中继 id」里。</p>
+    <p class="hint">请把上面的 id 告诉同事，让他们填到「Copilot 列表 → 中继 id」里。</p>
   </section>
   <section id="tab-peers" hidden>
     <div class="section-head">
-      <h2>沟通方</h2>
+      <h2>Copilot 列表</h2>
       <button id="btn-add-peer">添加</button>
     </div>
-    <p class="hint">只需填写对方 id 与地址；对方的角色与负责内容会在连接后自动同步，档案同步完成前无法收发消息。</p>
+    <p class="hint">只需填写对方 id 与地址；列表只显示在线的 Copilot（对方下线后条目会自动消失），角色与负责内容连接后自动同步（中继模式下由中继下发），同步完成前无法收发消息。</p>
     <div id="peers"></div>
   </section>
   <section id="tab-inbox" hidden>
@@ -311,7 +311,7 @@ export class ConsolePanel {
     <label>历史消息保留条数 <input id="history-limit" type="number" min="20" max="1000"></label>
     <div class="section-head"><h2>维护</h2></div>
     <button id="btn-scan-lan">扫描局域网</button>
-    <p class="hint">立即扫描本机所在网段，发现同样运行本扩展的设备并自动加入沟通方列表（平时启动后与每 60 秒也会自动扫描一次）。中继模式下无需扫描，中继会直接下发在线名单。</p>
+    <p class="hint">立即扫描本机所在网段，发现同样运行本扩展的设备并自动加入 Copilot 列表（平时启动后与每 60 秒也会自动扫描一次）。中继模式下无需扫描，中继会直接下发在线名单与在线档案。</p>
     <button id="btn-save-template">把当前角色/负责内容存为模板</button>
     <p class="hint">模板用于给以后新开的工作区预填角色与负责内容（<strong>不含 id</strong>，避免新窗口与现有窗口撞名）。</p>
     <button id="btn-reset-loop">重置熔断计数</button>

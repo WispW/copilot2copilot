@@ -108,11 +108,14 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     if (missingSelf.length > 0) {
       throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot2Copilot 配置界面补全“我的档案”。`);
     }
+    if (input.to && input.to === store.config.identity.id) {
+      throw new Error('不能给自己发送消息：to 要填对方的 id（你自己的 id 不会出现在 Copilot 列表里）。');
+    }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
         ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
-        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单。`);
+        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单（默认只含在线的同事，且不含你自己）。`);
     }
     // 停用优先于档案检查：这样报错说的是真正的原因（用户主动停用，而非等待同步）
     if (!colleagueEnabled(colleague)) {
@@ -392,11 +395,14 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
     if (missingSelf.length > 0) {
       throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot2Copilot 配置界面补全“我的档案”。`);
     }
+    if (input.to && input.to === store.config.identity.id) {
+      throw new Error('不能给自己发送文件：to 要填对方的 id（你自己的 id 不会出现在 Copilot 列表里）。');
+    }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
         ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
-        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单。`);
+        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单（默认只含在线的同事，且不含你自己）。`);
     }
     if (!colleagueEnabled(colleague)) {
       throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
@@ -431,32 +437,42 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
   }
 }
 
-export class ListColleaguesTool implements vscode.LanguageModelTool<Record<string, never>> {
+interface ListColleaguesInput {
+  include_offline?: boolean;
+}
+
+export class ListColleaguesTool implements vscode.LanguageModelTool<ListColleaguesInput> {
   constructor(private readonly deps: ToolDeps) {}
 
-  async invoke(): Promise<vscode.LanguageModelToolResult> {
+  async invoke(options: vscode.LanguageModelToolInvocationOptions<ListColleaguesInput>): Promise<vscode.LanguageModelToolResult> {
     const { store, getTransport } = this.deps;
     const transport = getTransport();
-    const all = store.config.colleagues;
-    // 停用的沟通方不进入模型可见名单（用户明确要求"不启用就不把信息传给模型"）
-    const colleagues = all.filter(colleagueEnabled).map(c => ({
-      id: c.id,
-      role: c.role,
-      scope: c.scope,
-      online: transport?.isOnline(c.id) ?? false,
-      profile_ready: store.hasPeerProfile(c),
-    }));
+    const includeOffline = options.input?.include_offline === true;
+    const mine = store.config.identity.id;
+    // 指向本窗口自己的条目（id 或中继 id 命中自己）一律不出现在模型可见列表里
+    const configured = store.config.colleagues.filter(c => c.id !== mine && c.relayPeerId !== mine);
+    const enabledList = configured.filter(colleagueEnabled);
+    const colleagues = enabledList
+      .filter(c => includeOffline || (transport?.isOnline(c.id) ?? false))
+      .map(c => ({
+        id: c.id,
+        role: c.role,
+        scope: c.scope,
+        online: transport?.isOnline(c.id) ?? false,
+        profile_ready: store.hasPeerProfile(c),
+      }));
+    const note = colleagues.length > 0
+      ? undefined
+      : configured.length === 0
+        ? '当前没有可用沟通方：连上中继或同一网段的对等端会被自动发现并加入。'
+        : enabledList.length === 0
+          ? '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。'
+          : '当前没有在线的 Copilot（离线条目默认不列出；如需查看全部已配置条目，可传 include_offline=true）。';
     return json({
       mode: store.config.mode === 'relay' ? '中继' : '局域网',
       my_id: store.config.identity.id,
       colleagues,
-      ...(colleagues.length === 0
-        ? {
-          note: all.length === 0
-            ? '当前没有可用沟通方：连上中继或同一网段的对等端会被自动发现并加入。'
-            : '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。',
-        }
-        : {}),
+      ...(note ? { note } : {}),
     });
   }
 }

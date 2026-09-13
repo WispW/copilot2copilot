@@ -201,14 +201,6 @@ code {
   margin-bottom: 6px;
 }
 
-.peer-head .online {
-  color: var(--vscode-editorError-foreground, #f85149);
-}
-
-.peer-head .online.yes {
-  color: var(--vscode-testing-iconPassed, #3fb950);
-}
-
 .msg {
   border: 1px solid var(--vscode-panel-border);
   border-left: 3px solid var(--vscode-focusBorder);
