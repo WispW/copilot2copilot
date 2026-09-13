@@ -154,21 +154,6 @@ export class LanTransport implements Transport {
     return Boolean(outbound || inbound);
   }
 
-  connectPeer(peerId: string): void {
-    const link = this.linkFor(peerId);
-    if (link.ws && (link.ws.readyState === WebSocket.OPEN || link.ws.readyState === WebSocket.CONNECTING)) {
-      log(`[lan] 手动连接 ${peerId}：已有连接（readyState=${link.ws.readyState}），跳过`);
-      return;
-    }
-    if (link.timer) {
-      clearTimeout(link.timer);
-      link.timer = undefined;
-    }
-    link.retryMs = 1000;
-    log(`[lan] 手动连接 ${peerId}`);
-    this.ensureLink(peerId);
-  }
-
   private linkFor(peerId: string): PeerLink {
     let link = this.links.get(peerId);
     if (!link) {

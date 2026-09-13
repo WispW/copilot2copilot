@@ -345,6 +345,23 @@ export class Store {
     await this.updateConfig(this.cfg);
   }
 
+  /**
+   * 删除界面手填的沟通方；自动发现的条目应使用停用（否则会被再次发现）。
+   * 同时按 id 或中继 id 匹配（与 findColleague 一致），同一设备的两条记录会连带删除；
+   * id 为空（未填写的占位条目）时只精确删除空 id 条目。
+   */
+  async removeColleague(id: string): Promise<void> {
+    const key = id.trim();
+    const next = this.cfg.colleagues.filter(c =>
+      key ? c.id !== key && c.relayPeerId !== key : c.id !== key,
+    );
+    if (next.length === this.cfg.colleagues.length) {
+      return;
+    }
+    this.cfg.colleagues = next;
+    await this.updateConfig(this.cfg);
+  }
+
   /** 我的档案缺失的字段名（用于界面提示与通信前校验，按当前生效档案判断） */
   missingIdentityFields(): string[] {
     const { id, role, scope } = this.identity;

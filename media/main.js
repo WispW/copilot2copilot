@@ -229,7 +229,6 @@ function renderPeers() {
         ${disabled ? '<span class="hint conflict">已停用</span>' : ''}
         ${selfConflict ? '<span class="hint conflict">对方 id 与我的 id 相同，这里要填对方的 id</span>' : ''}
         <span style="flex:1"></span>
-        <button class="small" data-connect="${i}" title="立即尝试连接该同事">连接</button>
         <button class="small" data-toggle="${i}" title="停用后不参与通信，也不会出现在模型可见名单里">${disabled ? '启用' : '停用'}</button>
         ${auto ? '' : `<button class="danger small" data-del="${i}">删除</button>`}
       </div>
@@ -252,6 +251,9 @@ function renderPeers() {
     const delBtn = div.querySelector('button[data-del]');
     if (delBtn) {
       delBtn.addEventListener('click', () => {
+        const id = draft.colleagues[i].id;
+        // 立即持久化删除，避免 5 秒热刷新把服务端仍存在的条目并回草稿（“删除复活”）
+        vscode.postMessage({ type: 'removeColleague', peerId: id });
         draft.colleagues.splice(i, 1);
         renderPeers();
       });
@@ -259,19 +261,6 @@ function renderPeers() {
     div.querySelector('button[data-toggle]').addEventListener('click', () => {
       const peer = draft.colleagues[i];
       vscode.postMessage({ type: 'toggleColleague', peerId: peer.id, enabled: peer.enabled === false });
-    });
-    div.querySelector('button[data-connect]').addEventListener('click', event => {
-      const btn = event.currentTarget;
-      vscode.postMessage({ type: 'connectPeer', peerId: draft.colleagues[i].id });
-      btn.textContent = '连接中…';
-      btn.disabled = true;
-      // 状态推送不一定每次都触发重绘，这里兜底恢复按钮
-      setTimeout(() => {
-        if (btn.isConnected) {
-          btn.textContent = '连接';
-          btn.disabled = false;
-        }
-      }, 3000);
     });
     el.appendChild(div);
   });
@@ -329,10 +318,6 @@ $('btn-save').addEventListener('click', () => {
 $('btn-reload').addEventListener('click', () => {
   draft = JSON.parse(JSON.stringify(state.config));
   render();
-});
-
-$('btn-test').addEventListener('click', () => {
-  vscode.postMessage({ type: 'restart' });
 });
 
 $('btn-logs').addEventListener('click', () => {

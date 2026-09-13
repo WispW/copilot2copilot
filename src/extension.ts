@@ -55,7 +55,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getStatus: () => status,
     getOnlineIds,
     restart,
-    connectPeer: peerId => currentTransport?.connectPeer(peerId),
     scanLan: () => currentTransport?.scanDiscovered?.(),
   });
 

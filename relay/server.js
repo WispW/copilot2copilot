@@ -13,7 +13,8 @@
  * 端点：/  存活文本；/healthz  JSON 状态（供探针使用，不含任何 id）
  *       /peers  在线 id 列表（需令牌），供客户端连接前自查 id 是否被占用
  * 职责：按 to 字段路由消息；目标不在线时暂存（每目标最多 200 条）；广播在线名单 presence。
- * 同 id：已有在线连接时拒绝新连接（4005），不做顶替，避免多实例互相抢连接。
+ * 同 id：已有在线连接时拒绝新连接（4005），不做顶替，避免多实例互相抢连接；
+ *       但已失去心跳的残留连接（断电/断网遗留，TCP 半开）会被新连接接管。
  */
 'use strict';
 
@@ -53,7 +54,7 @@ const PORT = parsePort(process.env.PORT) ?? parsePort(process.argv[2]) ?? 8787;
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.TALK2COPILOT_TOKEN || '';
 const OFFLINE_LIMIT = 200;
-const HEARTBEAT_MS = 30000;
+const HEARTBEAT_MS = 10000;
 const SHUTDOWN_GRACE_MS = 5000;
 
 /** @type {Map<string, import('ws').WebSocket>} */
@@ -175,11 +176,18 @@ wss.on('connection', (ws, req) => {
 
   const previous = peers.get(id);
   if (previous && previous !== ws && previous.readyState === previous.OPEN) {
-    // 拒绝新连接而不是顶掉旧的：同 id 多实例（如同一台机器开了多个窗口）时
-    // 由服务端做权威判定，避免双方互相顶下线、每秒抢一次连接
-    log('warn', '拒绝连接：该 id 已在线', { id, ip: remoteOf(req) });
-    ws.close(4005, 'id in use');
-    return;
+    if (previous.isAlive === false) {
+      // 旧连接已失去心跳（断电/断网残留，TCP 半开、收不到 FIN/RST）：
+      // 直接接管，避免一个死连接挡住设备重新上线。
+      log('warn', '接管失去心跳的残留连接（断电/断网遗留）', { id, ip: remoteOf(req) });
+      previous.terminate();
+    } else {
+      // 旧连接仍活着（如同一台机器开了多个窗口）：拒绝新连接而不是顶掉旧的，
+      // 由服务端做权威判定，避免双方互相顶下线、每秒抢一次连接
+      log('warn', '拒绝连接：该 id 已在线', { id, ip: remoteOf(req) });
+      ws.close(4005, 'id in use');
+      return;
+    }
   }
   if (previous && previous !== ws) {
     log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });

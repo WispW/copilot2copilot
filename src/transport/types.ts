@@ -16,8 +16,6 @@ export interface Transport {
   stop(): Promise<void>;
   /** 发送一条消息；连接不可用时入本地队列稍后重试 */
   send(env: MessageEnvelope): Promise<void>;
-  /** 立即尝试建立到某位同事的连接（局域网：主动直连；中继：确保与中继服务器的连接） */
-  connectPeer(peerId: string): void;
   /** 某个同事当前是否可达 */
   isOnline(peerId: string): boolean;
   /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */

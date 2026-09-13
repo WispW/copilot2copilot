@@ -9,7 +9,8 @@ import { Transport, TransportStatus } from './types';
 
 const MAX_RETRY_MS = 30_000;
 
-/** 4xxx 关闭码表示配置或身份问题，重连无法自愈（尤其同 id 多窗口会互相顶下线） */
+/** 4xxx 关闭码表示配置或身份问题；4004/4005 也可能是断电后残留连接未清理，
+ *  收到后延迟自动重试，由服务端裁决（死连接被接管、活连接继续拒绝） */
 const FATAL_CLOSE_REASONS: Record<number, string> = {
   4001: '中继令牌不正确',
   4002: '未向中继声明本机 id',
@@ -30,8 +31,6 @@ export class RelayTransport implements Transport {
   private timer?: ReturnType<typeof setTimeout>;
   private running = false;
   private token = '';
-  /** 不可自愈的停止原因；非空时不再自动重连，等用户点「连接」 */
-  private fatalReason = '';
   private onlinePeers = new Set<string>();
   /** 本次连接中已向哪些同事声明过自己的档案（避免重复与回环） */
   private readonly helloSent = new Set<string>();
@@ -42,7 +41,6 @@ export class RelayTransport implements Transport {
 
   async start(): Promise<void> {
     this.running = true;
-    this.fatalReason = '';
     this.token = await this.store.getToken();
     log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'}`);
     this.connect();
@@ -104,24 +102,6 @@ export class RelayTransport implements Transport {
       void this.send(makeEnvelope({ kind: 'offline', from: this.myRelayId(), to: c.id, profile: identity }));
       log(`[relay] 已向 ${c.id} 发出下线通告`);
     }
-  }
-
-  /** 中继模式下“连接某位同事”等价于确保与中继服务器的连接 */
-  connectPeer(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      log(`[relay] 手动连接：已有连接（readyState=${this.ws.readyState}），跳过`);
-      return;
-    }
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-    if (this.fatalReason) {
-      log(`[relay] 手动重试：清除停止原因（${this.fatalReason}）`);
-      this.fatalReason = '';
-    }
-    this.retryMs = 1000;
-    this.connect();
   }
 
   /**
@@ -186,14 +166,9 @@ export class RelayTransport implements Transport {
     }
     this.statusEmitter.fire({ state: 'connecting', detail: '正在连接中继服务器...' });
     if (await this.idTakenOnRelay(url, myId)) {
-      // 服务端也会拒绝同 id 的新连接（4005），这里提前拦下可给出更明确的指引
-      this.fatalReason = '该中继 id 已被另一个窗口占用';
-      log(`[relay] 预检发现 id=${myId} 已在线，放弃连接`);
-      this.statusEmitter.fire({
-        state: 'offline',
-        detail: `中继上已有 id=${myId} 的窗口在线（很可能是本机另一个窗口）。请在上方「本工作区档案」把 id 改成别的值后点「连接」重试`,
-      });
-      return;
+      // 在线名单里有本机 id：可能是断电遗留的死连接（服务端会接管），也可能是另一窗口。
+      // 不再直接放弃连接，交给服务端裁决：死连接被接管，活连接则仍以 4005 拒绝。
+      log(`[relay] 预检发现 id=${myId} 已在在线名单，继续尝试连接（死连接会被服务端接管）`);
     }
     if (!this.running) {
       return;
@@ -208,7 +183,6 @@ export class RelayTransport implements Transport {
       });
     } catch (err) {
       // 地址格式非法时构造会直接抛出；此处兜住，避免变成未处理的 Promise 拒绝
-      this.fatalReason = '中继地址无法连接';
       logError('[relay] 无法创建连接', err);
       this.statusEmitter.fire({ state: 'offline', detail: `中继地址无法连接：${(err as Error).message}。请检查地址格式后点「连接」重试` });
       return;
@@ -246,10 +220,13 @@ export class RelayTransport implements Transport {
       }
       const fatal = FATAL_CLOSE_REASONS[code];
       if (fatal) {
-        // 重连只会再次被拒（甚至把另一个窗口顶下线），因此停下等用户处理
-        this.fatalReason = fatal;
-        log(`[relay] 该关闭码不可自愈（${code}），停止自动重连`);
-        this.statusEmitter.fire({ state: 'offline', detail: `${fatal}。请更换 id 或修正配置后点「连接」重试` });
+        // 断电/断网重启后，服务端旧连接可能仍在清理中；不再永久停止自动重连，
+        // 改为延迟重试——服务端对活连接仍会拒绝（不会顶掉对方窗口），
+        // 死连接被接管后，下次连接即可成功。
+        log(`[relay] 收到 ${code}（${fatal}），30 秒后自动重试`);
+        this.statusEmitter.fire({ state: 'offline', detail: `${fatal}。正在自动重试…` });
+        this.retryMs = 30000;
+        this.scheduleReconnect();
         return;
       }
       this.scheduleReconnect();

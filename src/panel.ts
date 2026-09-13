@@ -24,7 +24,6 @@ interface PanelDeps {
   getStatus(): TransportStatus;
   getOnlineIds(): string[];
   restart(): Promise<void>;
-  connectPeer(peerId: string): void;
   /** 立即做一轮局域网自动发现（中继模式为服务端推送，无需调用） */
   scanLan(): void;
 }
@@ -169,12 +168,6 @@ export class ConsolePanel {
         );
         break;
       }
-      case 'restart': {
-        log('[panel] 测试连接（重启通道）');
-        await this.deps.restart();
-        this.postState();
-        break;
-      }
       case 'clearHistory':
         await this.store.clearMessages();
         break;
@@ -212,21 +205,14 @@ export class ConsolePanel {
       case 'showLogs':
         showLogs();
         break;
-      case 'connectPeer':
+      case 'removeColleague': {
         if (typeof m.peerId === 'string' && m.peerId) {
-          const peerId = m.peerId;
-          log(`[panel] 手动连接同事 ${peerId}`);
-          this.deps.connectPeer(peerId);
+          log(`[panel] 删除沟通方 ${m.peerId}`);
+          await this.store.removeColleague(m.peerId);
           this.postState();
-          setTimeout(() => {
-            if (!this.deps.getOnlineIds().includes(peerId)) {
-              void vscode.window.showWarningMessage(
-                `Copilot2Copilot：暂未连接到 ${peerId}。请检查对方是否已启动、地址是否正确、防火墙是否放行。`,
-              );
-            }
-          }, 6000);
         }
         break;
+      }
       default:
         break;
     }
@@ -254,7 +240,6 @@ export class ConsolePanel {
   <div class="actions">
     <button id="btn-logs">查看日志</button>
     <button id="btn-reload" title="放弃未保存的修改，恢复为当前生效配置">重新载入</button>
-    <button id="btn-test">测试连接</button>
     <button id="btn-save" class="primary">保存并应用</button>
   </div>
 </header>
