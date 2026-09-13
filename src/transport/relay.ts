@@ -32,8 +32,6 @@ export class RelayTransport implements Transport {
   private running = false;
   private token = '';
   private onlinePeers = new Set<string>();
-  /** 本次连接中已向哪些同事声明过自己的档案（避免重复与回环） */
-  private readonly helloSent = new Set<string>();
   /** 已明确通告下线的同事（收到其任何消息后恢复在线） */
   private readonly offlinePeers = new Set<string>();
 
@@ -57,7 +55,6 @@ export class RelayTransport implements Transport {
     this.ws = undefined;
     this.queue = [];
     this.onlinePeers.clear();
-    this.helloSent.clear();
     this.statusEmitter.fire({ state: 'stopped', detail: '中继模式已停止' });
   }
 
@@ -196,13 +193,6 @@ export class RelayTransport implements Transport {
       // 向中继上报自己的档案（to='server' 由中继登记后广播给所有在线设备），中继是档案的权威来源
       log(`[relay] 向中继上报档案（角色=${identity.role || '空'} 负责=${identity.scope || '空'}）`);
       ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: 'server', profile: identity })));
-      for (const c of this.store.config.colleagues) {
-        if (c.relayPeerId && colleagueEnabled(c)) {
-          log(`[relay] 向 ${c.relayPeerId} 发送档案声明`);
-          this.helloSent.add(c.id);
-          ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: c.relayPeerId, profile: identity })));
-        }
-      }
       const queued = this.queue.splice(0);
       if (queued.length > 0) {
         log(`[relay] 补发队列消息 ${queued.length} 条`);
@@ -217,7 +207,6 @@ export class RelayTransport implements Transport {
     });
     ws.on('close', (code, reason) => {
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reason.toString() || '(空)'}`);
-      this.helloSent.clear();
       if (!this.running) {
         return;
       }
@@ -283,14 +272,10 @@ export class RelayTransport implements Transport {
     }
     log(`[relay] 收到 ${parsed.kind} from=${parsed.from}（消息 ${parsed.id}）`);
     if (parsed.profile) {
+      // 档案以中继目录为准；对端随消息携带的 profile 仅作补充（不再互发档案声明）
       void this.store.applyPeerProfile(parsed.profile, parsed.from).then(changed => {
         if (changed) {
           this.refreshPresenceStatus();
-        }
-        if (parsed.kind === 'hello' && !this.helloSent.has(parsed.from)) {
-          this.helloSent.add(parsed.from);
-          log(`[relay] 回发档案声明给 ${parsed.from}`);
-          void this.send(makeEnvelope({ kind: 'hello', from: this.store.config.identity.id, to: parsed.from, profile: this.store.config.identity }));
         }
       });
     }
