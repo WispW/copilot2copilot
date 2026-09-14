@@ -112,7 +112,7 @@ export class FileHub {
     Promise<{ transferId: string; meta: FileMeta; savedName: string }> {
     const transport = this.getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     if (!transport.isOnline(peerId)) {
       throw new Error(`同事 ${peerId} 当前不在线。文件传输需要双方同时在线（不会排队补发），请稍后重试。`);

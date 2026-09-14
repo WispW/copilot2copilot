@@ -21,11 +21,6 @@ export interface ColleagueProfile {
   id: string;
   role: string;
   scope: string;
-  /**
-   * 本机可被回连的局域网地址（含端口），随 hello 声明。
-   * 对端学到的是连接源 IP，经隧道/转发/多实例时可能是第三方地址，故用自报值兜底。
-   */
-  addrs?: string[];
 }
 
 export type MessageKind = 'hello' | 'message' | 'reply' | 'presence' | 'offline'

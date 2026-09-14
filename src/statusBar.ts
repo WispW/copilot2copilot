@@ -46,7 +46,6 @@ export class StatusBar {
 
     const lines = [
       `${status.detail}${total > 0 ? ` · ${online}/${total} 同事在线` : ''}`,
-      `模式：${this.store.config.mode === 'relay' ? '中继' : '局域网'}`,
     ];
     if (unread > 0) {
       lines.push(`未回复消息：${unread} 条`);

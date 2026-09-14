@@ -6,7 +6,6 @@ import { ConsolePanel } from './panel';
 import { StatusBar } from './statusBar';
 import { Store } from './store';
 import { registerTools, ReplyWaiter, ToolDeps } from './tools';
-import { LanTransport } from './transport/lan';
 import { RelayTransport } from './transport/relay';
 import { Transport, TransportStatus } from './transport/types';
 
@@ -37,13 +36,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(statusBar);
 
   const restart = async (): Promise<void> => {
-    log(`重启通道：模式=${store.config.mode}`);
+    log('重启通道：中继模式');
     transportDisposables.forEach(d => d.dispose());
     transportDisposables = [];
     await currentTransport?.stop();
     currentTransport = undefined;
 
-    const transport: Transport = store.config.mode === 'relay' ? new RelayTransport(store) : new LanTransport(store);
+    const transport: Transport = new RelayTransport(store);
     currentTransport = transport;
     transportDisposables.push(
       transport.onMessage(env => {
@@ -70,7 +69,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getStatus: () => status,
     getOnlineIds,
     restart,
-    scanLan: () => currentTransport?.scanDiscovered?.(),
   });
 
   const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport, fileHub };

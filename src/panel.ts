@@ -16,7 +16,6 @@ interface PanelState {
   status: TransportStatus;
   messages: HistoryItem[];
   onlineIds: string[];
-  myAddresses: string[];
   identityMissing: string[];
 }
 
@@ -24,12 +23,7 @@ interface PanelDeps {
   getStatus(): TransportStatus;
   getOnlineIds(): string[];
   restart(): Promise<void>;
-  /** 立即做一轮局域网自动发现（中继模式为服务端推送，无需调用） */
-  scanLan(): void;
 }
-
-/** 界面草稿里的沟通方：带一个仅前端使用的“地址被编辑过”标记 */
-type DraftColleague = ColleagueConfig & { lanAddrEdited?: boolean };
 
 export class ConsolePanel {
   private panel?: vscode.WebviewPanel;
@@ -111,13 +105,8 @@ export class ConsolePanel {
       status: this.deps.getStatus(),
       messages: this.store.listMessages(50),
       onlineIds: this.deps.getOnlineIds(),
-      myAddresses: this.myAddresses(),
       identityMissing: this.store.missingIdentityFields(),
     };
-  }
-
-  private myAddresses(): string[] {
-    return this.store.myAddresses();
   }
 
   private async handleMessage(msg: unknown): Promise<void> {
@@ -134,24 +123,19 @@ export class ConsolePanel {
         this.postState();
         break;
       case 'save': {
-        log(`[panel] 保存配置：模式=${m.config?.mode ?? '(未提供)'} 同事数=${m.config?.colleagues?.length ?? '?'}`);
+        log(`[panel] 保存配置：同事数=${m.config?.colleagues?.length ?? '?'}`);
         if (m.config) {
           // 对方档案（role/scope）以 store 中已同步的值为准，避免界面旧快照把它覆盖成空
           const merged: AppConfig = {
             ...m.config,
-            colleagues: (m.config.colleagues as DraftColleague[]).map(raw => {
+            colleagues: (m.config.colleagues as ColleagueConfig[]).map(raw => {
               const current = this.store.config.colleagues.find(x => x.id === raw.id);
-              // 只有界面上真正动过地址才采用草稿值（草稿可能落后于服务端的自动纠正）；
-              // 新建沟通方填了地址，同样算手填
-              const edited = Boolean(raw.lanAddrEdited) || (!current && Boolean(raw.lanAddr?.trim()));
-              const lanAddr = edited || !current ? (raw.lanAddr ?? '') : current.lanAddr;
               return {
-                ...raw,
+                id: raw.id,
                 role: current?.role ?? raw.role,
                 scope: current?.scope ?? raw.scope,
-                lanAddr,
-                // 手填值被清空 ⇒ 交回自动学习，避免空地址连同 manual 标记一起被锁死
-                lanAddrSource: edited ? (lanAddr.trim() ? 'manual' : 'auto') : (current?.lanAddrSource ?? 'auto'),
+                relayPeerId: raw.relayPeerId ?? current?.relayPeerId ?? '',
+                enabled: raw.enabled !== false,
               };
             }),
           };
@@ -199,12 +183,6 @@ export class ConsolePanel {
         }
         break;
       }
-      case 'scanLan': {
-        log('[panel] 手动触发局域网扫描');
-        this.deps.scanLan();
-        void vscode.window.showInformationMessage('Copilot2Copilot：已开始扫描局域网，发现的对等端会自动加入 Copilot 列表。');
-        break;
-      }
       case 'saveTemplate': {
         await this.store.saveTemplateFromCurrent();
         log('[panel] 已把当前档案的角色/负责内容存为模板');
@@ -218,14 +196,6 @@ export class ConsolePanel {
       case 'showLogs':
         showLogs();
         break;
-      case 'removeColleague': {
-        if (typeof m.peerId === 'string' && m.peerId) {
-          log(`[panel] 删除沟通方 ${m.peerId}`);
-          await this.store.removeColleague(m.peerId);
-          this.postState();
-        }
-        break;
-      }
       default:
         break;
     }
@@ -264,20 +234,11 @@ export class ConsolePanel {
 </nav>
 <main>
   <section id="tab-conn">
-    <h2>通信模式</h2>
-    <div class="mode-row">
-      <label><input type="radio" name="mode" value="lan"> 局域网直连</label>
-      <label><input type="radio" name="mode" value="relay"> 中继服务器</label>
-    </div>
-    <div id="lan-fields">
-      <label>监听端口 <input id="lan-port" type="number" min="1" max="65535"></label>
-      <p class="hint">本机地址（可告诉同事填到他们的“局域网地址”里）：<code id="my-addrs"></code></p>
-      <p class="hint">局域网模式需要系统防火墙放行该端口，且双方处于同一网段。</p>
-    </div>
+    <h2>中继服务器</h2>
     <div id="relay-fields">
       <label>中继地址 <input id="relay-url" placeholder="wss://relay.example.com"></label>
       <label>中继令牌（可选） <input id="token" type="password" placeholder="留空表示保持不变"></label>
-      <p class="hint">令牌保存在系统密钥库（SecretStorage）。局域网模式面向可信内网，只校验对方 id，不校验令牌。</p>
+      <p class="hint">令牌保存在系统密钥库（SecretStorage）。</p>
       <p class="hint">中继 id 即下面的「档案 id」，本机每个窗口各用各的档案，因此不会互相顶下线。</p>
     </div>
     <h2>本工作区档案（对方在其 Copilot 中可见）</h2>
@@ -289,14 +250,13 @@ export class ConsolePanel {
       <label>负责内容 <input id="id-scope" placeholder="如：订单服务、支付网关"></label>
     </div>
     <p class="hint" id="identity-hint"></p>
-    <p class="hint">请把上面的 id 告诉同事，让他们填到「Copilot 列表 → 中继 id」里。</p>
+    <p class="hint">请把上面的 id 告诉同事——双方的档案会经中继互相同步，无需手工登记。</p>
   </section>
   <section id="tab-peers" hidden>
     <div class="section-head">
       <h2>Copilot 列表</h2>
-      <button id="btn-add-peer">添加</button>
     </div>
-    <p class="hint">只需填写对方 id 与地址；列表只显示在线的 Copilot（对方下线后条目会自动消失），角色与负责内容连接后自动同步（中继模式下由中继下发），同步完成前无法收发消息。</p>
+    <p class="hint">列表由中继自动维护：只显示在线的 Copilot（对方下线后条目会自动消失），角色与负责内容由中继下发；不需要手工添加或编辑。</p>
     <div id="peers"></div>
   </section>
   <section id="tab-inbox" hidden>
@@ -310,8 +270,6 @@ export class ConsolePanel {
     <label>等待回复默认超时（秒） <input id="wait-timeout" type="number" min="5" max="180"></label>
     <label>历史消息保留条数 <input id="history-limit" type="number" min="20" max="1000"></label>
     <div class="section-head"><h2>维护</h2></div>
-    <button id="btn-scan-lan">扫描局域网</button>
-    <p class="hint">立即扫描本机所在网段，发现同样运行本扩展的设备并自动加入 Copilot 列表（平时启动后与每 60 秒也会自动扫描一次）。中继模式下无需扫描，中继会直接下发在线名单与在线档案。</p>
     <button id="btn-save-template">把当前角色/负责内容存为模板</button>
     <p class="hint">模板用于给以后新开的工作区预填角色与负责内容（<strong>不含 id</strong>，避免新窗口与现有窗口撞名）。</p>
     <button id="btn-reset-loop">重置熔断计数</button>

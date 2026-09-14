@@ -8,7 +8,7 @@ export interface TransportStatus {
   detail: string;
 }
 
-/** 通信通道统一抽象：局域网对等直连 或 中继转发 */
+/** 通信通道统一抽象（当前实现为中继转发） */
 export interface Transport {
   readonly onMessage: Event<MessageEnvelope>;
   readonly onStatus: Event<TransportStatus>;
@@ -20,6 +20,4 @@ export interface Transport {
   isOnline(peerId: string): boolean;
   /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */
   sendOfflineNotice(): void;
-  /** 立即做一轮自动发现扫描（仅局域网模式实现；中继模式由服务端推送在线名单） */
-  scanDiscovered?(): void;
 }

@@ -101,7 +101,7 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     const identity = store.config.identity;
     const missingSelf = store.missingIdentityFields();
@@ -114,15 +114,15 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
-        ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
-        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单（默认只含在线的同事，且不含你自己）。`);
+        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
+        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
     }
     // 停用优先于档案检查：这样报错说的是真正的原因（用户主动停用，而非等待同步）
     if (!colleagueEnabled(colleague)) {
       throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
     }
     if (!store.hasPeerProfile(colleague)) {
-      throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持连接（可在配置界面点击该沟通方的“连接”按钮）；同步成功后即可发送。`);
+      throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持在线，且中继服务端已升级（未升级的中继不下发档案）。`);
     }
 
     // 熔断：窗口内与同一同事的往来条数达上限时拒绝继续发送，避免两端无人值守地互相追问
@@ -282,7 +282,7 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
@@ -389,7 +389,7 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
     const { store, fileHub } = this.deps;
     const input = options.input;
     if (!this.deps.getTransport()) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
@@ -401,8 +401,8 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
-        ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
-        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单（默认只含在线的同事，且不含你自己）。`);
+        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
+        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
     }
     if (!colleagueEnabled(colleague)) {
       throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
@@ -464,12 +464,12 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<ListColleagu
     const note = colleagues.length > 0
       ? undefined
       : configured.length === 0
-        ? '当前没有可用沟通方：连上中继或同一网段的对等端会被自动发现并加入。'
+        ? '当前没有可用沟通方：连上中继后，在线设备会被自动登记到列表中。'
         : enabledList.length === 0
           ? '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。'
           : '当前没有在线的 Copilot（离线条目默认不列出；如需查看全部已配置条目，可传 include_offline=true）。';
     return json({
-      mode: store.config.mode === 'relay' ? '中继' : '局域网',
+      mode: '中继',
       my_id: store.config.identity.id,
       colleagues,
       ...(note ? { note } : {}),
