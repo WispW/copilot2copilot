@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
+import { FileHub } from './files';
 import { Injector } from './injector';
 import { disposeLogger, log, logError, showLogs } from './logger';
 import { ConsolePanel } from './panel';
 import { StatusBar } from './statusBar';
 import { Store } from './store';
 import { registerTools, ReplyWaiter, ToolDeps } from './tools';
-import { LanTransport } from './transport/lan';
 import { RelayTransport } from './transport/relay';
 import { Transport, TransportStatus } from './transport/types';
 
@@ -16,27 +16,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const store = new Store(context);
   const waiters = new ReplyWaiter();
   const injector = new Injector(store, waiters, context.extensionUri);
+  const fileHub = new FileHub(store, () => currentTransport, arrival => injector.injectFile(arrival));
+  fileHub.cleanupStaleTransferFiles();
   let status: TransportStatus = { state: 'stopped', detail: '未启动' };
   let transportDisposables: vscode.Disposable[] = [];
 
-  /** 在线同事 id：状态栏与面板共用的实时数据源 */
+  /**
+   * 在线同事 id：状态栏与列表共用的实时数据源。
+   * 只排除"指向自己"的条目；**不能**在这里排除已停用条目——列表用它判断"是否在线"，
+   * 一旦剔除，用户点「停用」会让整行消失且无法再启用（停用的对端本身仍是在线的）。
+   */
   const getOnlineIds = (): string[] =>
-    store.config.colleagues.filter(c => currentTransport?.isOnline(c.id)).map(c => c.id);
+    store.config.colleagues
+      .filter(c => c.id !== store.config.identity.id && c.relayPeerId !== store.config.identity.id)
+      .filter(c => currentTransport?.isOnline(c.id))
+      .map(c => c.id);
 
   const statusBar = new StatusBar(store, getOnlineIds);
   context.subscriptions.push(statusBar);
 
   const restart = async (): Promise<void> => {
-    log(`重启通道：模式=${store.config.mode}`);
+    log('重启通道：中继模式');
     transportDisposables.forEach(d => d.dispose());
     transportDisposables = [];
     await currentTransport?.stop();
     currentTransport = undefined;
 
-    const transport: Transport = store.config.mode === 'relay' ? new RelayTransport(store) : new LanTransport(store);
+    const transport: Transport = new RelayTransport(store);
     currentTransport = transport;
     transportDisposables.push(
-      transport.onMessage(env => void injector.handleIncoming(env)),
+      transport.onMessage(env => {
+        // 文件通道由 FileHub 接管，其余信封交给消息注入
+        if (!fileHub.handle(env)) {
+          void injector.handleIncoming(env);
+        }
+      }),
       transport.onStatus(s => {
         log(`状态：${s.state} · ${s.detail}`);
         status = s;
@@ -55,11 +69,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getStatus: () => status,
     getOnlineIds,
     restart,
-    connectPeer: peerId => currentTransport?.connectPeer(peerId),
-    scanLan: () => currentTransport?.scanDiscovered?.(),
   });
 
-  const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport };
+  const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport, fileHub };
   registerTools(context, deps);
 
   context.subscriptions.push(

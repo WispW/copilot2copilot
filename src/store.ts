@@ -8,22 +8,14 @@ import { log } from './logger';
 
 export interface ColleagueConfig {
   id: string;
-  /** 由对方自动同步，本地只读展示 */
+  /** 由中继/对端自动同步，本地只读展示 */
   role: string;
   scope: string;
-  /** 局域网地址，形如 192.168.5.40:3901 */
-  lanAddr: string;
-  /** manual=界面手填，不自动覆盖；auto=自动学习，可被后续学习结果纠正 */
-  lanAddrSource?: 'manual' | 'auto';
-  /** 中继模式下的对端 id */
+  /** 中继上的路由 id（自动登记时等于 id；保留该字段以兼容历史配置） */
   relayPeerId: string;
-  /** manual=界面添加（可删除）；auto=自动发现（不可删除，只能停用） */
-  source?: 'manual' | 'auto';
   /** 停用后不参与工具层与自动注入；缺省视为启用 */
   enabled?: boolean;
 }
-
-export type TransportMode = 'lan' | 'relay';
 
 /** 沟通方是否参与通信：停用的不主动连接、不进工具列表、不自动注入（消息仍记入收件箱） */
 export function colleagueEnabled(c: ColleagueConfig | undefined): boolean {
@@ -31,13 +23,20 @@ export function colleagueEnabled(c: ColleagueConfig | undefined): boolean {
 }
 
 export interface AppConfig {
-  mode: TransportMode;
   /** 模板档案：只用于给新工作区档案预填角色与负责内容，不参与通信身份 */
   identity: ColleagueProfile;
-  lan: { listenPort: number };
   relay: { url: string };
   behavior: { waitTimeoutSec: number; historyLimit: number };
   colleagues: ColleagueConfig[];
+}
+
+/** 文件通道：本条历史记录关联的文件 */
+export interface HistoryFile {
+  name: string;
+  size: number;
+  sha256: string;
+  /** in：本机落盘路径；out：本机源文件路径 */
+  path: string;
 }
 
 /** 一条历史消息：direction=in 为收到，out 为发出 */
@@ -52,31 +51,29 @@ export interface HistoryItem {
   /** in：是否已回复；out：是否已收到回复 */
   done: boolean;
   replyText?: string;
+  /** 通过文件通道交接的文件（此时 id = 该次传输编号） */
+  file?: HistoryFile;
 }
 
 function defaultConfig(): AppConfig {
   const user = os.userInfo().username || 'me';
   return {
-    mode: 'lan',
     identity: { id: user, role: '', scope: '' },
-    lan: { listenPort: 3901 },
     relay: { url: '' },
     behavior: { waitTimeoutSec: 90, historyLimit: 200 },
     colleagues: [],
   };
 }
 
-/** 合并默认值，容忍旧配置缺字段（旧版的 relay.myPeerId 已废弃，不再读取） */
+/** 合并默认值，容忍旧配置缺字段（mode / lan / lanAddr 等局域网时代的字段会被丢弃） */
 function normalize(raw: Partial<AppConfig>): AppConfig {
   const base = defaultConfig();
   return {
-    mode: raw.mode === 'relay' ? 'relay' : 'lan',
     identity: {
       id: raw.identity?.id?.trim() || base.identity.id,
       role: raw.identity?.role ?? '',
       scope: raw.identity?.scope ?? '',
     },
-    lan: { listenPort: raw.lan?.listenPort || base.lan.listenPort },
     relay: { url: raw.relay?.url ?? '' },
     behavior: { ...base.behavior, ...(raw.behavior ?? {}) },
     colleagues: Array.isArray(raw.colleagues)
@@ -84,31 +81,11 @@ function normalize(raw: Partial<AppConfig>): AppConfig {
         id: String(c?.id ?? ''),
         role: String(c?.role ?? ''),
         scope: String(c?.scope ?? ''),
-        lanAddr: String(c?.lanAddr ?? ''),
-        lanAddrSource: c?.lanAddrSource === 'manual' ? 'manual' : 'auto',
         relayPeerId: String(c?.relayPeerId ?? ''),
-        // 老配置里的沟通方都是界面手填的，因此缺省为 manual（可删除）
-        source: c?.source === 'auto' ? 'auto' : 'manual',
         enabled: c?.enabled !== false,
       }))
       : [],
   };
-}
-
-/**
- * 挑选该同事的可回连地址。连接源 IP 在隧道/转发/多实例场景下可能是第三方地址，
- * 故优先采用对端自报的地址；其中与源 IP 同址的那条最可信（顺便拿到对方端口）。
- */
-function pickLanAddr(declared: unknown, observed: string): string {
-  const list = (Array.isArray(declared) ? declared : [])
-    .filter((a: unknown): a is string => typeof a === 'string')
-    .map(a => a.trim())
-    .filter(a => a.length > 0);
-  if (!observed) {
-    return list[0] ?? '';
-  }
-  const matched = list.find(a => a === observed || a.startsWith(`${observed}:`));
-  return matched ?? list[0] ?? observed;
 }
 
 /**
@@ -215,18 +192,18 @@ export class Store {
     return folders.length === 1 ? folders[0].name : `${folders[0].name} 等 ${folders.length} 个工作区`;
   }
 
-  /** 本机可被回连的局域网地址（含监听端口），随档案声明给同事并在面板展示 */
-  myAddresses(): string[] {
-    const port = this.cfg.lan.listenPort;
-    const out: string[] = [];
-    for (const infos of Object.values(os.networkInterfaces())) {
-      for (const info of infos ?? []) {
-        if (info.family === 'IPv4' && !info.internal) {
-          out.push(`${info.address}:${port}`);
-        }
-      }
-    }
-    return out;
+  /** 文件收件箱目录：同事发来的文件落在这里（不进入工作区） */
+  filesDir(): string {
+    const dir = path.join(this.context.globalStorageUri.fsPath, 'files');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /** 传输中转目录：接收中的 .part 文件，校验通过后移入收件箱 */
+  transfersDir(): string {
+    const dir = path.join(this.context.globalStorageUri.fsPath, 'transfers');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
   }
 
   /** 保存当前工作区档案（恒为工作区档案，不再有全局身份） */
@@ -246,12 +223,19 @@ export class Store {
     await this.updateConfig({ ...this.cfg, identity: { ...this.cfg.identity, role, scope } });
   }
 
-  /** 按 id 或中继 id 找沟通方；未指定 id 且只有一位时返回唯一那位 */
+  /**
+   * 按 id 或中继 id 找沟通方；未指定 id 且只有一位时返回唯一那位。
+   * 指向本窗口自己的条目一律不可用——配置是全局的（globalStorage）、身份是按窗口的，
+   * 别的窗口做自动发现时可能把本窗口登记进来（id 或中继 id 命中自己都算）。
+   */
   findColleague(id?: string): ColleagueConfig | undefined {
+    const mine = this.identity.id;
+    const otherOf = (c: ColleagueConfig): boolean => c.id !== mine && c.relayPeerId !== mine;
     if (id) {
-      return this.cfg.colleagues.find(c => c.id === id || c.relayPeerId === id);
+      return this.cfg.colleagues.find(c => (c.id === id || c.relayPeerId === id) && otherOf(c));
     }
-    return this.cfg.colleagues.length === 1 ? this.cfg.colleagues[0] : undefined;
+    const others = this.cfg.colleagues.filter(otherOf);
+    return others.length === 1 ? others[0] : undefined;
   }
 
   async updateConfig(next: AppConfig): Promise<void> {
@@ -260,46 +244,28 @@ export class Store {
     this.changeEmitter.fire();
   }
 
-  /** 收到 hello 或任意消息时更新联系人档案；未登记的对方自动登记（可信内网） */
-  async applyPeerProfile(profile: ColleagueProfile, peerId: string, suggestedAddr = ''): Promise<boolean> {
-    const learned = pickLanAddr(profile.addrs, suggestedAddr);
+  /** 收到带 profile 的消息时更新联系人档案；未登记的对方自动登记（可信内网） */
+  async applyPeerProfile(profile: ColleagueProfile, peerId: string): Promise<boolean> {
     const idx = this.cfg.colleagues.findIndex(c => c.id === peerId || c.relayPeerId === peerId);
     if (idx < 0) {
-      this.cfg.colleagues.push({
-        id: peerId,
-        role: profile.role,
-        scope: profile.scope,
-        lanAddr: learned,
-        lanAddrSource: 'auto',
-        relayPeerId: '',
-      });
+      this.cfg.colleagues.push({ id: peerId, role: profile.role, scope: profile.scope, relayPeerId: peerId });
       await this.updateConfig(this.cfg);
       return true;
     }
     const c = this.cfg.colleagues[idx];
-    // 界面手填的地址不覆盖；自动学到的地址允许被后续学习结果纠正
-    const lanAddr = c.lanAddr && c.lanAddrSource === 'manual' ? c.lanAddr : (learned || c.lanAddr);
-    if (c.role === profile.role && c.scope === profile.scope && c.lanAddr === lanAddr) {
+    if (c.role === profile.role && c.scope === profile.scope) {
       return false;
     }
-    this.cfg.colleagues[idx] = {
-      ...c,
-      role: profile.role,
-      scope: profile.scope,
-      lanAddr,
-      // 手填值不存在时退回自动学习，避免空地址连同 manual 标记一起被锁死
-      lanAddrSource: c.lanAddrSource === 'manual' && lanAddr ? 'manual' : 'auto',
-    };
+    this.cfg.colleagues[idx] = { ...c, role: profile.role, scope: profile.scope };
     await this.updateConfig(this.cfg);
     return true;
   }
 
   /**
-   * 自动发现的沟通方：不存在则新增（source='auto'），已存在则只补空字段 ——
-   * 用户手填过的地址/中继 id 一律不覆盖，停用状态也保留。
+   * 自动发现的沟通方：不存在则新增，已存在则只补空字段；停用状态保留。
    * @returns 配置是否发生变化
    */
-  async upsertDiscoveredPeer(found: { id: string; role?: string; scope?: string; relayPeerId?: string; lanAddr?: string }): Promise<boolean> {
+  async upsertDiscoveredPeer(found: { id: string; role?: string; scope?: string; relayPeerId?: string }): Promise<boolean> {
     const id = found.id.trim();
     if (!id || id === this.identity.id) {
       return false;
@@ -310,10 +276,7 @@ export class Store {
         id,
         role: found.role ?? '',
         scope: found.scope ?? '',
-        lanAddr: found.lanAddr ?? '',
-        lanAddrSource: 'auto',
         relayPeerId: found.relayPeerId ?? '',
-        source: 'auto',
         enabled: true,
       });
       await this.updateConfig(this.cfg);
@@ -324,15 +287,51 @@ export class Store {
       role: found.role || c.role,
       scope: found.scope || c.scope,
       relayPeerId: c.relayPeerId || found.relayPeerId || '',
-      lanAddr: c.lanAddr || found.lanAddr || '',
     };
-    if (merged.role === c.role && merged.scope === c.scope
-      && merged.relayPeerId === c.relayPeerId && merged.lanAddr === c.lanAddr) {
+    if (merged.role === c.role && merged.scope === c.scope && merged.relayPeerId === c.relayPeerId) {
       return false;
     }
     this.cfg.colleagues[idx] = { ...c, ...merged };
     await this.updateConfig(this.cfg);
     return true;
+  }
+
+  /**
+   * 中继下发的在线档案目录（中继是档案的权威来源）：登记/更新对应 Copilot 的角色与负责内容。
+   * 只动档案字段——本地地址、中继 id、启用状态、自动/手工来源保持不变；离线条目不受影响。
+   */
+  async applyRelayDirectory(list: ColleagueProfile[]): Promise<boolean> {
+    let changed = false;
+    for (const profile of list) {
+      // 目录来自中继，仍按外部输入校验：只接受字符串并限长
+      if (typeof profile?.id !== 'string') {
+        continue;
+      }
+      const id = profile.id.trim().slice(0, 128);
+      if (!id || id === this.identity.id) {
+        continue;
+      }
+      const role = (typeof profile.role === 'string' ? profile.role : '').slice(0, 200);
+      const scope = (typeof profile.scope === 'string' ? profile.scope : '').slice(0, 200);
+      const idx = this.cfg.colleagues.findIndex(c => c.id === id || c.relayPeerId === id);
+      if (idx < 0) {
+        this.cfg.colleagues.push({ id, role, scope, relayPeerId: id, enabled: true });
+        changed = true;
+        continue;
+      }
+      const c = this.cfg.colleagues[idx];
+      // 目录以 id 为准：顺手把历史脏值（relayPeerId 与 id 不一致）归一到 id——
+      // 该字段在界面上已不可编辑，不归一的话这类条目会永远被判离线
+      if (c.role === role && c.scope === scope && c.relayPeerId === id) {
+        continue;
+      }
+      this.cfg.colleagues[idx] = { ...c, role, scope, relayPeerId: id };
+      changed = true;
+    }
+    if (changed) {
+      await this.updateConfig(this.cfg);
+    }
+    return changed;
   }
 
   /** 启用 / 停用某位沟通方（停用后不参与工具层与自动注入） */
@@ -434,7 +433,7 @@ export class Store {
     }
   }
 
-  /** 局域网/中继共用令牌，存入 SecretStorage 避免随设置同步 */
+  /** 中继令牌，存入 SecretStorage 避免随设置同步 */
   async getToken(): Promise<string> {
     return (await this.context.secrets.get('talk2copilot.token')) ?? '';
   }

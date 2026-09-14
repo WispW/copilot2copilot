@@ -55,7 +55,6 @@ window.addEventListener('message', event => {
         renderConn();
         renderPeers();
       });
-      renderScanHint();
     }
   }
 });
@@ -73,10 +72,7 @@ function mergeColleagues() {
       id: sc.id,
       role: sc.role,
       scope: sc.scope,
-      lanAddr: sc.lanAddr,
-      lanAddrSource: sc.lanAddrSource,
       relayPeerId: sc.relayPeerId,
-      source: sc.source,
       enabled: sc.enabled,
     });
   });
@@ -109,13 +105,7 @@ function withFocusPreserved(renderFn) {
   }
 }
 
-/** 「扫描局域网」按钮只在局域网模式有意义 */
-function renderScanHint() {
-  const btn = $('btn-scan-lan');
-  btn.hidden = draft.mode !== 'lan';
-}
-
-/** 把服务端权威的只读字段（对方档案、自动学习的地址）同步进正在编辑的 draft */
+/** 把服务端权威的只读字段（对方档案、停用状态）同步进正在编辑的 draft */
 function syncReadonlyFields() {
   (state.config.colleagues || []).forEach(sc => {
     const dc = draft.colleagues.find(c => c.id === sc.id);
@@ -124,11 +114,8 @@ function syncReadonlyFields() {
     }
     dc.role = sc.role;
     dc.scope = sc.scope;
-    // 用户没动过地址就跟随服务端，否则过期的草稿会把自动纠正过的地址又写回去
-    if (!dc.lanAddrEdited) {
-      dc.lanAddr = sc.lanAddr;
-      dc.lanAddrSource = sc.lanAddrSource;
-    }
+    // 停用状态以服务端为准：否则点「停用」后草稿不更新，界面永远停在原状态
+    dc.enabled = sc.enabled !== false;
   });
 }
 
@@ -150,13 +137,23 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function formatSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) {
+    return `${n} 字节`;
+  }
+  if (n < 1048576) {
+    return `${(n / 1024).toFixed(1)} KiB`;
+  }
+  return `${(n / 1048576).toFixed(2)} MiB`;
+}
+
 function render() {
   renderStatus();
   renderConn();
   renderPeers();
   renderInbox();
   renderBehavior();
-  renderScanHint();
 }
 
 function renderStatus() {
@@ -168,12 +165,6 @@ function renderStatus() {
 
 function renderConn() {
   const cfg = draft;
-  document.querySelectorAll('input[name="mode"]').forEach(el => {
-    el.checked = el.value === cfg.mode;
-  });
-  $('lan-fields').hidden = cfg.mode !== 'lan';
-  $('relay-fields').hidden = cfg.mode !== 'relay';
-  $('lan-port').value = cfg.lan.listenPort;
   $('relay-url').value = cfg.relay.url;
 
   // 档案恒按工作区保存：本机多窗口因此各有各的 id
@@ -185,7 +176,6 @@ function renderConn() {
   $('id-scope').value = src.scope ?? '';
   $('identity-hint').textContent = '本工作区档案按窗口独立保存；换一个工作区或另开一个窗口就是另一份档案。';
 
-  $('my-addrs').textContent = (state.myAddresses || []).join('  ');
   const missing = state.identityMissing || [];
   const warn = $('identity-warning');
   warn.hidden = missing.length === 0;
@@ -206,72 +196,35 @@ function renderBehavior() {
 
 function renderPeers() {
   const el = $('peers');
-  const peers = draft.colleagues || [];
-  if (peers.length === 0) {
-    el.innerHTML = '<p class="hint">暂无沟通方。连上中继或同一网段的对等端会被自动发现并加入；也可以点「添加」手工填写。</p>';
+  const all = draft.colleagues || [];
+  const onlineIds = new Set(state?.onlineIds || []);
+  const myId = (state && state.effectiveIdentity && state.effectiveIdentity.id) || '';
+  // 列表由中继目录自动维护：只显示在线条目，且不显示指向自己（id 或中继 id 命中自己）的条目
+  const rows = all.map((c, i) => ({ c, i }))
+    .filter(({ c }) => c.id !== myId && c.relayPeerId !== myId)
+    .filter(({ c }) => onlineIds.has(c.id));
+  if (rows.length === 0) {
+    el.innerHTML = '<p class="hint">当前没有在线的 Copilot。连上中继后，在线设备的条目会自动出现在这里（由中继下发）。</p>';
     return;
   }
   el.innerHTML = '';
-  peers.forEach((c, i) => {
-    const online = (state.onlineIds || []).includes(c.id);
+  rows.forEach(({ c, i }) => {
     const profileReady = Boolean(c.role && c.scope);
-    const selfConflict = Boolean(c.id) && c.id === draft.identity.id;
     const disabled = c.enabled === false;
-    const auto = c.source === 'auto';
     const div = document.createElement('div');
     div.className = disabled ? 'peer disabled' : 'peer';
     div.innerHTML = `
       <div class="peer-head">
         <b>${escapeHtml(c.id || '（未设置 id）')}</b>
-        <span class="hint online ${online ? 'yes' : ''}">${online ? '在线' : '离线'}</span>
         <span class="hint">${profileReady ? '档案已同步' : '档案未同步'}</span>
-        ${auto ? '<span class="hint">自动发现</span>' : ''}
         ${disabled ? '<span class="hint conflict">已停用</span>' : ''}
-        ${selfConflict ? '<span class="hint conflict">对方 id 与我的 id 相同，这里要填对方的 id</span>' : ''}
         <span style="flex:1"></span>
-        <button class="small" data-connect="${i}" title="立即尝试连接该同事">连接</button>
         <button class="small" data-toggle="${i}" title="停用后不参与通信，也不会出现在模型可见名单里">${disabled ? '启用' : '停用'}</button>
-        ${auto ? '' : `<button class="danger small" data-del="${i}">删除</button>`}
       </div>
-      <div class="grid">
-        <label>对方 id <input data-i="${i}" data-f="id" value="${escapeHtml(c.id)}" placeholder="与对方“本工作区档案”中的 id 一致"></label>
-        <label>局域网地址${c.lanAddrSource === 'auto' && c.lanAddr ? '（自动发现/学习，可能不可回连）' : ''} <input data-i="${i}" data-f="lanAddr" value="${escapeHtml(c.lanAddr)}" placeholder="192.168.5.40:3901（可只填 IP）"></label>
-        <label>中继 id <input data-i="${i}" data-f="relayPeerId" value="${escapeHtml(c.relayPeerId)}" placeholder="对方在中继上的 id"></label>
-        <label>角色（自动同步） <input value="${escapeHtml(c.role)}" readonly placeholder="等待对方同步"></label>
-        <label>负责内容（自动同步） <input value="${escapeHtml(c.scope)}" readonly placeholder="等待对方同步"></label>
-      </div>`;
-    div.querySelectorAll('input[data-f]').forEach(inp => {
-      inp.addEventListener('input', () => {
-        const peer = draft.colleagues[Number(inp.dataset.i)];
-        peer[inp.dataset.f] = inp.value;
-        if (inp.dataset.f === 'lanAddr') {
-          peer.lanAddrEdited = true;
-        }
-      });
-    });
-    const delBtn = div.querySelector('button[data-del]');
-    if (delBtn) {
-      delBtn.addEventListener('click', () => {
-        draft.colleagues.splice(i, 1);
-        renderPeers();
-      });
-    }
+      <p class="hint">角色：<b>${escapeHtml(c.role || '（等待中继同步）')}</b> · 负责内容：<b>${escapeHtml(c.scope || '（等待中继同步）')}</b></p>`;
     div.querySelector('button[data-toggle]').addEventListener('click', () => {
       const peer = draft.colleagues[i];
       vscode.postMessage({ type: 'toggleColleague', peerId: peer.id, enabled: peer.enabled === false });
-    });
-    div.querySelector('button[data-connect]').addEventListener('click', event => {
-      const btn = event.currentTarget;
-      vscode.postMessage({ type: 'connectPeer', peerId: draft.colleagues[i].id });
-      btn.textContent = '连接中…';
-      btn.disabled = true;
-      // 状态推送不一定每次都触发重绘，这里兜底恢复按钮
-      setTimeout(() => {
-        if (btn.isConnected) {
-          btn.textContent = '连接';
-          btn.disabled = false;
-        }
-      }, 3000);
     });
     el.appendChild(div);
   });
@@ -300,16 +253,21 @@ function renderInbox() {
     const snippet = m.snippet
       ? `<details><summary>代码片段</summary><pre class="body">${escapeHtml(m.snippet)}</pre></details>`
       : '';
+    const file = m.file
+      ? `<div class="file">文件：<b>${escapeHtml(m.file.name)}</b>（${formatSize(m.file.size)}，sha256 ${escapeHtml(String(m.file.sha256 || '').slice(0, 12))}…）${m.direction === 'in' && m.file.path ? `<br>已保存到：<code>${escapeHtml(m.file.path)}</code>` : ''}</div>`
+      : '';
     const reply = m.direction === 'out' && m.replyText
       ? `<div class="reply">对方回复：${escapeHtml(m.replyText)}</div>`
       : '';
+    const body = m.text ? `<pre class="body">${escapeHtml(m.text)}</pre>` : '';
     return `<div class="msg ${m.direction}">
       <div class="msg-head">
         <span class="badge">${dir}</span>
         <b>${escapeHtml(m.peerId)}</b>
         <span class="hint">${time} · ${status} · ${escapeHtml(m.id)}</span>
       </div>
-      <pre class="body">${escapeHtml(m.text)}</pre>
+      ${body}
+      ${file}
       ${snippet}
       ${reply}
     </div>`;
@@ -331,16 +289,12 @@ $('btn-reload').addEventListener('click', () => {
   render();
 });
 
-$('btn-test').addEventListener('click', () => {
-  vscode.postMessage({ type: 'restart' });
-});
-
 $('btn-logs').addEventListener('click', () => {
   vscode.postMessage({ type: 'showLogs' });
 });
 
-$('btn-scan-lan').addEventListener('click', () => {
-  vscode.postMessage({ type: 'scanLan' });
+$('btn-open-files').addEventListener('click', () => {
+  vscode.postMessage({ type: 'openFilesDir' });
 });
 
 $('btn-save-template').addEventListener('click', () => {
@@ -355,32 +309,6 @@ $('btn-clear-history').addEventListener('click', () => {
   vscode.postMessage({ type: 'clearHistory' });
 });
 
-$('btn-add-peer').addEventListener('click', () => {
-  draft.colleagues.push({
-    id: `peer${Date.now().toString(36)}`,
-    role: '',
-    scope: '',
-    lanAddr: '',
-    relayPeerId: '',
-  });
-  renderPeers();
-});
-
-document.querySelectorAll('input[name="mode"]').forEach(el => {
-  el.addEventListener('change', () => {
-    if (!el.checked) {
-      return;
-    }
-    draft.mode = el.value;
-    $('lan-fields').hidden = draft.mode !== 'lan';
-    $('relay-fields').hidden = draft.mode !== 'relay';
-    renderScanHint();
-  });
-});
-
-$('lan-port').addEventListener('input', () => {
-  draft.lan.listenPort = Number($('lan-port').value) || 3901;
-});
 $('relay-url').addEventListener('input', () => {
   draft.relay.url = $('relay-url').value.trim();
 });

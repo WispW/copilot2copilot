@@ -12,8 +12,11 @@
  *
  * 端点：/  存活文本；/healthz  JSON 状态（供探针使用，不含任何 id）
  *       /peers  在线 id 列表（需令牌），供客户端连接前自查 id 是否被占用
- * 职责：按 to 字段路由消息；目标不在线时暂存（每目标最多 200 条）；广播在线名单 presence。
- * 同 id：已有在线连接时拒绝新连接（4005），不做顶替，避免多实例互相抢连接。
+ * 职责：按 to 字段路由消息；目标不在线时暂存（每目标最多 200 条）；
+ *       广播在线名单与在线档案目录 presence——客户端连上后向 to='server' 上报自己的档案，
+ *       由中继统一维护并向所有在线设备下发，是档案的唯一权威来源。
+ * 同 id：已有在线连接时拒绝新连接（4005），不做顶替，避免多实例互相抢连接；
+ *       但已失去心跳的残留连接（断电/断网遗留，TCP 半开）会被新连接接管。
  */
 'use strict';
 
@@ -53,11 +56,14 @@ const PORT = parsePort(process.env.PORT) ?? parsePort(process.argv[2]) ?? 8787;
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN = process.env.TALK2COPILOT_TOKEN || '';
 const OFFLINE_LIMIT = 200;
-const HEARTBEAT_MS = 30000;
+const HEARTBEAT_MS = 10000;
 const SHUTDOWN_GRACE_MS = 5000;
 
 /** @type {Map<string, import('ws').WebSocket>} */
 const peers = new Map();
+/** 在线档案目录：id → {id, role, scope}，客户端连上后经 to='server' 上报，中继是档案的权威来源 */
+/** @type {Map<string, {id: string, role: string, scope: string}>} */
+const profiles = new Map();
 /** @type {Map<string, object[]>} */
 const offline = new Map();
 let seq = 0;
@@ -103,6 +109,7 @@ function broadcastPresence() {
     to: '*',
     ts: Date.now(),
     peers: [...peers.keys()],
+    profiles: [...profiles.values()],
   });
   for (const ws of peers.values()) {
     if (ws.readyState === ws.OPEN) {
@@ -172,14 +179,27 @@ wss.on('connection', (ws, req) => {
     ws.close(4002, 'missing id');
     return;
   }
+  if (id === 'server') {
+    // 'server' 是档案上报的保留地址，不能同时作为设备 id，否则该设备的消息会被静默吞掉
+    log('warn', '拒绝连接：id 为保留地址', { id, ip: remoteOf(req) });
+    ws.close(4002, 'reserved id');
+    return;
+  }
 
   const previous = peers.get(id);
   if (previous && previous !== ws && previous.readyState === previous.OPEN) {
-    // 拒绝新连接而不是顶掉旧的：同 id 多实例（如同一台机器开了多个窗口）时
-    // 由服务端做权威判定，避免双方互相顶下线、每秒抢一次连接
-    log('warn', '拒绝连接：该 id 已在线', { id, ip: remoteOf(req) });
-    ws.close(4005, 'id in use');
-    return;
+    if (previous.isAlive === false) {
+      // 旧连接已失去心跳（断电/断网残留，TCP 半开、收不到 FIN/RST）：
+      // 直接接管，避免一个死连接挡住设备重新上线。
+      log('warn', '接管失去心跳的残留连接（断电/断网遗留）', { id, ip: remoteOf(req) });
+      previous.terminate();
+    } else {
+      // 旧连接仍活着（如同一台机器开了多个窗口）：拒绝新连接而不是顶掉旧的，
+      // 由服务端做权威判定，避免双方互相顶下线、每秒抢一次连接
+      log('warn', '拒绝连接：该 id 已在线', { id, ip: remoteOf(req) });
+      ws.close(4005, 'id in use');
+      return;
+    }
   }
   if (previous && previous !== ws) {
     log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });
@@ -211,6 +231,21 @@ wss.on('connection', (ws, req) => {
     if (!env || typeof env.to !== 'string' || env.kind === 'presence') {
       return;
     }
+    // 档案上报：客户端连上后向 to='server' 发送自己的档案，由中继登记并广播（不进离线暂存队列）
+    if (env.to === 'server') {
+      if (env.profile && typeof env.profile === 'object') {
+        const role = (typeof env.profile.role === 'string' ? env.profile.role : '').slice(0, 200);
+        const scope = (typeof env.profile.scope === 'string' ? env.profile.scope : '').slice(0, 200);
+        const previous = profiles.get(id);
+        // 值未变化就不广播，避免客户端重复上报把全量目录刷爆
+        if (!previous || previous.role !== role || previous.scope !== scope) {
+          profiles.set(id, { id, role, scope });
+          log('info', `${id} 已上报档案`, { roleChars: role.length, scopeChars: scope.length, total: profiles.size });
+          broadcastPresence();
+        }
+      }
+      return;
+    }
     const target = peers.get(env.to);
     if (target && target.readyState === target.OPEN) {
       send(target, env);
@@ -228,6 +263,8 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     if (peers.get(id) === ws) {
       peers.delete(id);
+      // 按连接归属删除档案：被接管连接的迟到 close 不会清掉新连接的档案
+      profiles.delete(id);
       log('info', `${id} 已离线`, { online: peers.size });
       if (!shuttingDown) {
         broadcastPresence();

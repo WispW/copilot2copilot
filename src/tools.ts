@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import { FileHub } from './files';
 import { log } from './logger';
 import { makeEnvelope, MessageEnvelope } from './protocol';
 import { colleagueEnabled, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
@@ -61,6 +64,7 @@ export interface ToolDeps {
   store: Store;
   waiters: ReplyWaiter;
   getTransport(): Transport | undefined;
+  fileHub: FileHub;
 }
 
 interface SendInput {
@@ -97,25 +101,28 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     const identity = store.config.identity;
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
       throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot2Copilot 配置界面补全“我的档案”。`);
     }
+    if (input.to && input.to === store.config.identity.id) {
+      throw new Error('不能给自己发送消息：to 要填对方的 id（你自己的 id 不会出现在 Copilot 列表里）。');
+    }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
       throw new Error(store.config.colleagues.length === 0
-        ? '尚未配置任何沟通方，请先在 Copilot2Copilot 配置界面添加同事。'
-        : `找不到沟通方 “${input.to}”。请先调用 talk2copilot_list_colleagues 查看可用名单。`);
+        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
+        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
     }
     // 停用优先于档案检查：这样报错说的是真正的原因（用户主动停用，而非等待同步）
     if (!colleagueEnabled(colleague)) {
       throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
     }
     if (!store.hasPeerProfile(colleague)) {
-      throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持连接（可在配置界面点击该沟通方的“连接”按钮）；同步成功后即可发送。`);
+      throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持在线，且中继服务端已升级（未升级的中继不下发档案）。`);
     }
 
     // 熔断：窗口内与同一同事的往来条数达上限时拒绝继续发送，避免两端无人值守地互相追问
@@ -275,7 +282,7 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查模式与连接设置。');
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
@@ -312,32 +319,160 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
   }
 }
 
-export class ListColleaguesTool implements vscode.LanguageModelTool<Record<string, never>> {
+/** 解析要发送的文件路径：支持绝对路径与工作区内的相对路径 */
+function resolveFilePath(input: string | undefined): string {
+  const raw = (input ?? '').trim();
+  if (!raw) {
+    throw new Error('请提供要发送的文件路径（path）。');
+  }
+  if (path.isAbsolute(raw)) {
+    return raw;
+  }
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const hits = folders.map(f => path.join(f.uri.fsPath, raw)).filter(p => fs.existsSync(p));
+  if (hits.length === 1) {
+    return hits[0];
+  }
+  if (hits.length > 1) {
+    throw new Error(`当前工作区有多个根目录，相对路径 ${raw} 有歧义，请改用绝对路径。`);
+  }
+  if (folders.length === 1) {
+    // 不存在时也补成完整路径，让后续报错能指出实际查找位置
+    return path.join(folders[0].uri.fsPath, raw);
+  }
+  throw new Error(`无法解析相对路径 ${raw}：当前未打开工作区，请改用绝对路径。`);
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} 字节`;
+  }
+  if (bytes < 1048576) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${(bytes / 1048576).toFixed(2)} MiB`;
+}
+
+interface SendFileInput {
+  to?: string;
+  path: string;
+  message?: string;
+}
+
+export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
   constructor(private readonly deps: ToolDeps) {}
 
-  async invoke(): Promise<vscode.LanguageModelToolResult> {
+  async prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<SendFileInput>): Promise<vscode.PreparedToolInvocation> {
+    const colleague = this.deps.store.findColleague(options.input.to);
+    const target = colleague ? `${colleague.id}（${colleague.role || '档案未同步'}）` : '未配置的沟通方';
+    let desc: string;
+    try {
+      const abs = resolveFilePath(options.input.path);
+      const stat = fs.statSync(abs);
+      desc = `**${path.basename(abs)}**（${formatSize(stat.size)}）\n\n源路径：${abs}`;
+    } catch (err) {
+      desc = `无法读取待发送文件：${(err as Error).message}`;
+    }
+    return {
+      invocationMessage: `正在向 ${colleague?.id ?? '沟通方'} 发送文件`,
+      confirmationMessages: {
+        title: '向同事发送文件',
+        message: new vscode.MarkdownString(
+          `把以下文件发送给 **${target}**（对方只能读取，是否落地由对方用户决定）：\n\n---\n\n${desc}` +
+          (options.input.message ? `\n\n附言：${truncate(options.input.message)}` : ''),
+        ),
+      },
+    };
+  }
+
+  async invoke(options: vscode.LanguageModelToolInvocationOptions<SendFileInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
+    const { store, fileHub } = this.deps;
+    const input = options.input;
+    if (!this.deps.getTransport()) {
+      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
+    }
+    const missingSelf = store.missingIdentityFields();
+    if (missingSelf.length > 0) {
+      throw new Error(`你的档案尚未完善（缺少：${missingSelf.join('、')}），暂不能通信。请打开 Copilot2Copilot 配置界面补全“我的档案”。`);
+    }
+    if (input.to && input.to === store.config.identity.id) {
+      throw new Error('不能给自己发送文件：to 要填对方的 id（你自己的 id 不会出现在 Copilot 列表里）。');
+    }
+    const colleague = store.findColleague(input.to);
+    if (!colleague) {
+      throw new Error(store.config.colleagues.length === 0
+        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
+        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
+    }
+    if (!colleagueEnabled(colleague)) {
+      throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
+    }
+    if (!store.hasPeerProfile(colleague)) {
+      throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持连接。`);
+    }
+    if (store.isLoopSuspected(colleague.id)) {
+      log(`[tool] send_file 被熔断阻止：${colleague.id} 窗口内往来已达 ${store.recentMessageCount(colleague.id)} 条`);
+      throw new Error(`最近 ${LOOP_WINDOW_MS / 60000} 分钟内与 ${colleague.id} 的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话以免两端无限对话。请把已获得的信息交给本机用户；若确需继续，可由用户在配置界面「维护」里重置熔断计数。`);
+    }
+    const filePath = resolveFilePath(input.path);
+    log(`[tool] send_file → ${colleague.id}（${filePath}）`);
+    const result = await fileHub.sendFile(colleague.id, filePath, input.message ?? '', token);
+    await store.appendMessage({
+      id: result.transferId,
+      direction: 'out',
+      peerId: colleague.id,
+      text: input.message ?? '',
+      ts: Date.now(),
+      done: false,
+      file: { name: result.meta.name, size: result.meta.size, sha256: result.meta.sha256, path: filePath },
+    });
+    return json({
+      status: 'ok',
+      request_id: result.transferId,
+      target: colleague.id,
+      file: { name: result.meta.name, size: result.meta.size, sha256: result.meta.sha256 },
+      saved_name: result.savedName,
+      hint: '文件已送达对方收件箱（sha256 已校验），对方 Copilot 会收到带本机路径的通知。若你在附言里提了问题，可用 talk2copilot_wait_reply 继续等待回复；对方是否把文件应用到其工作区由对方用户决定。',
+    });
+  }
+}
+
+interface ListColleaguesInput {
+  include_offline?: boolean;
+}
+
+export class ListColleaguesTool implements vscode.LanguageModelTool<ListColleaguesInput> {
+  constructor(private readonly deps: ToolDeps) {}
+
+  async invoke(options: vscode.LanguageModelToolInvocationOptions<ListColleaguesInput>): Promise<vscode.LanguageModelToolResult> {
     const { store, getTransport } = this.deps;
     const transport = getTransport();
-    const all = store.config.colleagues;
-    // 停用的沟通方不进入模型可见名单（用户明确要求"不启用就不把信息传给模型"）
-    const colleagues = all.filter(colleagueEnabled).map(c => ({
-      id: c.id,
-      role: c.role,
-      scope: c.scope,
-      online: transport?.isOnline(c.id) ?? false,
-      profile_ready: store.hasPeerProfile(c),
-    }));
+    const includeOffline = options.input?.include_offline === true;
+    const mine = store.config.identity.id;
+    // 指向本窗口自己的条目（id 或中继 id 命中自己）一律不出现在模型可见列表里
+    const configured = store.config.colleagues.filter(c => c.id !== mine && c.relayPeerId !== mine);
+    const enabledList = configured.filter(colleagueEnabled);
+    const colleagues = enabledList
+      .filter(c => includeOffline || (transport?.isOnline(c.id) ?? false))
+      .map(c => ({
+        id: c.id,
+        role: c.role,
+        scope: c.scope,
+        online: transport?.isOnline(c.id) ?? false,
+        profile_ready: store.hasPeerProfile(c),
+      }));
+    const note = colleagues.length > 0
+      ? undefined
+      : configured.length === 0
+        ? '当前没有可用沟通方：连上中继后，在线设备会被自动登记到列表中。'
+        : enabledList.length === 0
+          ? '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。'
+          : '当前没有在线的 Copilot（离线条目默认不列出；如需查看全部已配置条目，可传 include_offline=true）。';
     return json({
-      mode: store.config.mode === 'relay' ? '中继' : '局域网',
+      mode: '中继',
       my_id: store.config.identity.id,
       colleagues,
-      ...(colleagues.length === 0
-        ? {
-          note: all.length === 0
-            ? '当前没有可用沟通方：连上中继或同一网段的对等端会被自动发现并加入。'
-            : '当前所有沟通方都已被停用，如需使用请在 Copilot2Copilot 配置界面启用。',
-        }
-        : {}),
+      ...(note ? { note } : {}),
     });
   }
 }
@@ -363,6 +498,9 @@ export class ListInboxTool implements vscode.LanguageModelTool<InboxInput> {
         has_snippet: Boolean(i.snippet),
         replied: i.done,
         time: new Date(i.ts).toLocaleString(),
+        file: i.file
+          ? { name: i.file.name, size: i.file.size, sha256: i.file.sha256, saved_path: i.file.path }
+          : undefined,
       }));
     return json({ unread_only: unreadOnly, count: items.length, messages: items });
   }
@@ -375,5 +513,6 @@ export function registerTools(context: vscode.ExtensionContext, deps: ToolDeps):
     vscode.lm.registerTool('talk2copilot_wait_reply', new WaitReplyTool(deps)),
     vscode.lm.registerTool('talk2copilot_reply_message', new ReplyMessageTool(deps)),
     vscode.lm.registerTool('talk2copilot_list_inbox', new ListInboxTool(deps)),
+    vscode.lm.registerTool('talk2copilot_send_file', new SendFileTool(deps)),
   );
 }

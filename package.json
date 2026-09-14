@@ -1,8 +1,8 @@
 {
   "name": "copilot2copilot",
   "displayName": "Copilot2Copilot",
-  "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 直接沟通（局域网 / 中继双模式）",
-  "version": "0.3.9",
+  "description": "在 Copilot 中注册“向同事沟通”工具，让双方的 Copilot 通过中继直接沟通",
+  "version": "0.4.0",
   "publisher": "WispW",
   "private": true,
   "license": "MIT",
@@ -43,15 +43,20 @@
     "languageModelTools": [
       {
         "name": "talk2copilot_list_colleagues",
-        "displayName": "查看沟通方列表",
-        "modelDescription": "列出已配置的沟通方（同事），返回每位同事的 id、姓名、角色、负责内容与在线状态。当你不确定某个问题应该问谁时，先调用此工具查看名单，再调用 talk2copilot_send_message 发送。不需要参数。",
-        "userDescription": "列出已配置的沟通方及其分工",
+        "displayName": "查看 Copilot 列表",
+        "modelDescription": "列出当前**在线**的 Copilot（已配置的对端），返回每个 Copilot 的 id、角色与负责内容。当你不确定某个问题应该问谁时，先调用此工具查看列表，再调用 talk2copilot_send_message 发送。默认只列在线条目——离线的、已停用的、以及指向本机自己的条目都不会出现；确需查看全部已配置条目时传 include_offline=true。",
+        "userDescription": "列出在线的 Copilot 列表",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "list_colleagues",
         "icon": "$(organization)",
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "include_offline": {
+              "type": "boolean",
+              "description": "为 true 时连离线条目一起返回（已停用与指向本机自己的条目仍不会出现）。缺省只返回在线的 Copilot。"
+            }
+          },
           "required": []
         }
       },
@@ -154,7 +159,7 @@
       {
         "name": "talk2copilot_list_inbox",
         "displayName": "查看收件箱",
-        "modelDescription": "查看收到的同事消息列表（含已回复/未回复状态与时间）。用于确认是否有未处理的消息，或在错过通知后找回消息内容（含 request_id）。",
+        "modelDescription": "查看收到的同事消息列表（含已回复/未回复状态、时间与收到的文件信息）。用于确认是否有未处理的消息、在错过通知后找回消息内容（含 request_id），或取得同事发来的文件的落盘路径。",
         "userDescription": "查看收件箱中的消息",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "list_inbox",
@@ -168,6 +173,35 @@
             }
           },
           "required": []
+        }
+      },
+      {
+        "name": "talk2copilot_send_file",
+        "displayName": "给同事发送文件",
+        "modelDescription": "把一个本机文件原样发送给一位同事：分块传输、逐块确认与 sha256 校验全部由扩展完成，返回 status=ok 表示对方已收妥落盘（对方收件箱目录），对方 Copilot 会收到带本机路径的通知。用于交接代码、配置、日志、图片等内容——不要把大段文件内容粘贴进 talk2copilot_send_message 的正文。前提与限制：双方必须同时在线（离线不会排队补发）；单个文件上限 64 MiB；一次调用只发一个文件（多个文件请多次调用）；对方只能只读该文件，是否让它落地到对方工作区由对方用户决定。path 支持绝对路径或当前工作区内的相对路径；message 为可选附言（若你在附言里提了问题，可用 talk2copilot_wait_reply 等待回复）。不确定发给谁时先调用 talk2copilot_list_colleagues。",
+        "userDescription": "给同事发送文件（对方收件箱）",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "send_file",
+        "icon": "$(cloud-upload)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string",
+              "description": "目标同事的 id（来自 talk2copilot_list_colleagues）。仅配置了一位沟通方时可省略。"
+            },
+            "path": {
+              "type": "string",
+              "description": "要发送的文件路径：绝对路径，或当前工作区内的相对路径。"
+            },
+            "message": {
+              "type": "string",
+              "description": "可选：随文件附言（变更说明、需要对方注意的点等）。"
+            }
+          },
+          "required": [
+            "path"
+          ]
         }
       }
     ]
