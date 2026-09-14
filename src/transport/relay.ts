@@ -181,7 +181,7 @@ export class RelayTransport implements Transport {
     } catch (err) {
       // 地址格式非法时构造会直接抛出；此处兜住，避免变成未处理的 Promise 拒绝
       logError('[relay] 无法创建连接', err);
-      this.statusEmitter.fire({ state: 'offline', detail: `中继地址无法连接：${(err as Error).message}。请检查地址格式后点「连接」重试` });
+      this.statusEmitter.fire({ state: 'offline', detail: `中继地址无法连接：${(err as Error).message}。请检查地址格式后点「保存并应用」重试` });
       return;
     }
     this.ws = ws;
