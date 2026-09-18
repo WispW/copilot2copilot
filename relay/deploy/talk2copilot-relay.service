@@ -9,6 +9,8 @@ Type=simple
 User=talk2copilot
 Group=talk2copilot
 WorkingDirectory=/opt/talk2copilot-relay
+# 可写状态目录（systemd 自动创建并授权给服务账号）：封禁名单落盘在这里
+StateDirectory=talk2copilot-relay
 EnvironmentFile=/etc/talk2copilot-relay.env
 # 安装脚本会把这里的 node 路径替换为目标机上的实际路径
 ExecStart=/usr/bin/node /opt/talk2copilot-relay/server.js

@@ -3,6 +3,7 @@ import { FileHub } from './files';
 import { Injector } from './injector';
 import { disposeLogger, log, logError, showLogs } from './logger';
 import { ConsolePanel } from './panel';
+import { AdminDevice } from './protocol';
 import { StatusBar } from './statusBar';
 import { Store } from './store';
 import { registerTools, ReplyWaiter, ToolDeps } from './tools';
@@ -35,6 +36,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const statusBar = new StatusBar(store, getOnlineIds);
   context.subscriptions.push(statusBar);
 
+  /** 刷新管理员视角的在线设备与封禁名单（管理令牌未通过时清空并标记未验证） */
+  const refreshAdmin = async (): Promise<void> => {
+    const transport = currentTransport;
+    if (!transport) {
+      store.setAdminState([], [], false);
+      return;
+    }
+    const result = await transport.controlOp('admin', 'list');
+    if (!result.ok || !result.env) {
+      store.setAdminState([], [], false);
+      return;
+    }
+    const data = (result.env.payload ?? {}) as { devices?: AdminDevice[]; bans?: string[] };
+    store.setAdminState(data.devices ?? [], data.bans ?? [], true);
+  };
+
   const restart = async (): Promise<void> => {
     log('重启通道：中继模式');
     transportDisposables.forEach(d => d.dispose());
@@ -51,10 +68,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           void injector.handleIncoming(env);
         }
       }),
+      transport.onRejected(env => {
+        // 中继拒收回执（如与目标没有共同房间）：立刻终结等待中的工具调用，避免空等到超时
+        log(`中继拒收回执：${env.error ?? ''}（原消息 ${env.refId ?? ''}）`);
+        const notified = Boolean(env.refId) && waiters.fail(env.refId as string, env.error ?? '被中继拒绝');
+        if (!notified) {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：消息未送达——${env.error ?? '被中继拒绝'}`);
+        }
+      }),
       transport.onStatus(s => {
         log(`状态：${s.state} · ${s.detail}`);
         status = s;
         statusBar.update(s);
+        if (s.state === 'online') {
+          void refreshAdmin();
+        }
         panel.postState();
       }),
     );
@@ -69,6 +97,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getStatus: () => status,
     getOnlineIds,
     restart,
+    control: (kind, op, payload) => currentTransport
+      ? currentTransport.controlOp(kind, op, payload)
+      : Promise.resolve({ ok: false, error: '通信通道未启动，请点击「保存并应用」后重试' }),
+    refreshAdmin,
   });
 
   const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport, fileHub };

@@ -54,6 +54,8 @@ window.addEventListener('message', event => {
       withFocusPreserved(() => {
         renderConn();
         renderPeers();
+        renderRooms();
+        renderAdmin();
       });
     }
   }
@@ -122,9 +124,16 @@ function syncReadonlyFields() {
 document.querySelectorAll('#tabs button').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
-    ['conn', 'peers', 'inbox', 'behavior'].forEach(t => {
+    ['conn', 'peers', 'rooms', 'admin', 'inbox', 'behavior'].forEach(t => {
       $(`tab-${t}`).hidden = t !== btn.dataset.tab;
     });
+    // 切到房间 / 管理页时顺手拉一次最新状态（可见性与封禁变化只在服务端）
+    if (btn.dataset.tab === 'rooms') {
+      vscode.postMessage({ type: 'refreshRooms' });
+    }
+    if (btn.dataset.tab === 'admin') {
+      vscode.postMessage({ type: 'refreshAdmin' });
+    }
   });
 });
 
@@ -154,6 +163,8 @@ function render() {
   renderPeers();
   renderInbox();
   renderBehavior();
+  renderRooms();
+  renderAdmin();
 }
 
 function renderStatus() {
@@ -166,6 +177,13 @@ function renderStatus() {
 function renderConn() {
   const cfg = draft;
   $('relay-url').value = cfg.relay.url;
+
+  // 版本门禁：扩展与中继版本必须一致，否则中继拒绝接入（4008）
+  const relay = (state && state.relayInfo) || { version: '', protocol: 0 };
+  const mine = (state && state.extensionVersion) || '';
+  $('relay-version').textContent = relay.version
+    ? `中继运行版本：${relay.version}（协议 ${relay.protocol}）· 本机扩展版本：${mine}。两者必须一致，否则中继会拒绝接入。`
+    : `本机扩展版本：${mine}。中继运行版本将在连接成功后显示；两者必须一致，否则中继会拒绝接入。`;
 
   // 档案恒按工作区保存：本机多窗口因此各有各的 id
   const hasWorkspace = Boolean(wsState.label);
@@ -230,6 +248,167 @@ function renderPeers() {
   });
 }
 
+/** 房间 / 管理操作统一走中继控制面 */
+function roomOp(op, payload) {
+  vscode.postMessage({ type: 'roomOp', op, payload });
+}
+
+function adminOp(op, payload) {
+  vscode.postMessage({ type: 'adminOp', op, payload });
+}
+
+/**
+ * 危险操作的两步确认：VS Code webview 的沙箱会忽略原生 confirm()（静默返回 false），
+ * 会让按钮"点了没反应"，因此改为"再点一次确认"。
+ * 待确认状态存在内存里（键 → 到期时间），5 秒热刷新重绘不会丢失。
+ */
+const armedActions = new Map();
+
+function isArmed(key) {
+  const until = armedActions.get(key);
+  return Boolean(until && until > Date.now());
+}
+
+/** @returns true 表示该操作已处于待确认状态，本次点击应真正执行 */
+function armOrConfirm(key, ttlMs = 8000) {
+  if (isArmed(key)) {
+    armedActions.delete(key);
+    return true;
+  }
+  armedActions.set(key, Date.now() + ttlMs);
+  return false;
+}
+
+/** 展开了「管理」区的房间 id：界面每 5 秒热刷新重建 DOM，展开状态必须存在内存里才不会被打断 */
+const expandedRooms = new Set();
+
+function renderRooms() {
+  const el = $('rooms');
+  const rooms = (state && state.rooms) || [];
+  const myId = (state && state.effectiveIdentity && state.effectiveIdentity.id) || '';
+  const verified = Boolean(state && state.admin && state.admin.verified);
+  if (rooms.length === 0) {
+    el.innerHTML = '<p class="hint">当前中继上还没有房间。创建一个房间并把密码发给要通信的同事；对方加入后你们就能互相看到并通信。</p>';
+    return;
+  }
+  el.innerHTML = '';
+  rooms.forEach((room, i) => {
+    const owner = room.ownerId === myId;
+    const canManage = owner || verified;
+    const chip = m => `<span class="chip${m === myId ? ' me' : ''}">${escapeHtml(m)}</span>`;
+    const relayBanned = new Set(Array.isArray(room.bannedMembers) ? room.bannedMembers : []);
+    const memberChips = Array.isArray(room.members)
+      ? room.members.map(m => {
+        const armed = isArmed(`kick:${room.id}:${m}`);
+        const bannedHint = relayBanned.has(m) ? ' <span class="hint conflict">已被中继封禁（需管理员解封）</span>' : '';
+        return `${chip(m)}${bannedHint}${canManage && m !== room.ownerId
+          ? ` <button class="small${armed ? ' danger' : ''}" data-room-action="kick" data-member="${escapeHtml(m)}">${armed ? '确认移出' : '移出'}</button>`
+          : ''}`;
+      }).join(' ')
+      : '';
+    const memberSection = memberChips
+      ? `<p class="hint">成员（${room.memberCount}）：</p><p>${memberChips}</p>`
+      : `<p class="hint">成员：${room.memberCount} 人（加入后可查看明细）</p>`;
+    const blockedSection = canManage && Array.isArray(room.blocked) && room.blocked.length > 0
+      ? `<p class="hint">禁止再加入（解除后可凭密码重新加入）：</p><p>${room.blocked.map(m => `${chip(m)} <button class="small" data-room-action="unblock" data-member="${escapeHtml(m)}">解除</button>`).join(' ')}</p>`
+      : '';
+    const manageForm = canManage ? `
+      <label>改名 <input data-room-input="rename" placeholder="${escapeHtml(room.name)}" maxlength="32"> <button class="small" data-room-action="rename">保存</button></label>
+      <label>改密码 <input data-room-input="passwd" type="password" placeholder="留空表示清除密码"> <button class="small" data-room-action="passwd">保存</button></label>` : '';
+    const dissolveArmed = isArmed(`dissolve:${room.id}`);
+    // 成员与「移出」直接显示在卡片上（不藏在折叠区里）；改名/改密码/禁止名单/解散放进可折叠的管理区
+    const manageBox = canManage
+      ? `<div class="room-manage"${expandedRooms.has(room.id) ? '' : ' hidden'}>${manageForm}${blockedSection}<button class="small danger" data-room-action="dissolve">${dissolveArmed ? '确认解散？' : '解散房间'}</button></div>`
+      : '';
+    const badges = [
+      room.hasPassword ? '<span class="hint">🔒 有密码</span>' : '',
+      room.joined ? '<span class="hint">已加入</span>' : '',
+      owner ? '<span class="hint">所有者</span>' : (verified ? '<span class="hint">管理员</span>' : ''),
+    ].filter(Boolean).join(' ');
+    const joinBox = !room.joined
+      ? `<label>密码 <input data-room-input="join-password" type="password" placeholder="${room.hasPassword ? '输入房间密码' : '无需密码'}"></label>
+         <button class="small" data-room-action="join">加入</button>`
+      : (owner ? '' : '<button class="small" data-room-action="leave">退出</button>');
+    const div = document.createElement('div');
+    div.className = 'room';
+    div.dataset.room = String(i);
+    div.innerHTML = `
+      <div class="peer-head">
+        <b>${escapeHtml(room.name)}</b>
+        <span class="hint">所有者 ${escapeHtml(room.ownerId)}</span>
+        ${badges}
+        <span style="flex:1"></span>
+        ${joinBox}
+        ${canManage ? '<button class="small" data-room-action="manage">管理</button>' : ''}
+      </div>
+      ${memberSection}
+      ${manageBox}`;
+    el.appendChild(div);
+  });
+}
+
+function renderAdmin() {
+  const admin = (state && state.admin) || { tokenSet: false, verified: false, devices: [], bans: [] };
+  const relay = (state && state.relayInfo) || { version: '', protocol: 0 };
+  const hint = $('admin-hint');
+  if (!admin.tokenSet) {
+    hint.textContent = '未设置中继管理令牌：到「连接」页填写并保存后，即可查看/踢出/封禁在线设备，并对所有房间拥有所有者权限。';
+  } else if (!admin.verified) {
+    hint.textContent = '管理令牌未通过验证：请确认与中继配置的 TALK2COPILOT_ADMIN_TOKEN 一致；若中继未配置该变量，管理功能整体不可用。';
+  } else {
+    hint.textContent = `管理权限已生效${relay.version ? `（中继版本 ${relay.version}，协议 ${relay.protocol}）` : ''}。封禁后设备会从「在线设备」消失，可在下方「封禁名单」解除；解封后对方会在 60 秒内自动重连。注意：本页设备列表不受房间限制（供管理使用），但你的通信与 Copilot 列表仍受房间约束。`;
+  }
+  const devices = admin.devices || [];
+  const rooms = (state && state.rooms) || [];
+  const roomNameOf = id => {
+    const room = rooms.find(r => r.id === id);
+    return room ? room.name : id;
+  };
+  $('admin-devices').innerHTML = devices.length === 0
+    ? '<p class="hint">（无在线设备，或尚未获得管理权限）</p>'
+    : devices.map(d => {
+      const kickArmed = isArmed(`devkick:${d.id}`);
+      const banArmed = isArmed(`ban:${d.id}`);
+      const roomChips = (d.roomIds || []).map(rid => {
+        const armed = isArmed(`roomkick:${rid}:${d.id}`);
+        return `<span class="chip">${escapeHtml(roomNameOf(rid))}</span> <button class="small${armed ? ' danger' : ''}" data-admin-action="roomkick" data-room="${escapeHtml(rid)}" data-device="${escapeHtml(d.id)}">${armed ? '确认移出' : '移出'}</button>`;
+      }).join(' ');
+      return `<div class="peer">
+        <div class="peer-head">
+          <b>${escapeHtml(d.id)}</b>
+          <span class="hint">扩展 ${escapeHtml(d.version)}</span>
+          ${d.admin ? '<span class="hint">管理员</span>' : ''}
+          <span style="flex:1"></span>
+          <button class="small${kickArmed ? ' danger' : ''}" data-admin-action="kick" data-device="${escapeHtml(d.id)}">${kickArmed ? '确认踢出中继' : '踢出中继'}</button>
+          <button class="small danger" data-admin-action="ban" data-device="${escapeHtml(d.id)}">${banArmed ? '确认封禁' : '封禁'}</button>
+        </div>
+        <p class="hint">所在房间：${roomChips || '（无）'}</p>
+      </div>`;
+    }).join('');
+
+  // 房间移出名单：由各房间的 blocked 列表汇总（管理员对所有房间可见）
+  const roomBlocks = [];
+  for (const room of rooms) {
+    for (const member of (Array.isArray(room.blocked) ? room.blocked : [])) {
+      roomBlocks.push({ roomId: room.id, roomName: room.name, member });
+    }
+  }
+  $('admin-room-blocks').innerHTML = roomBlocks.length === 0
+    ? '<p class="hint">（没有房间移出记录）</p>'
+    : roomBlocks.map(b => `<div class="peer">
+        <div class="peer-head">
+          <b>${escapeHtml(b.member)}</b>
+          <span class="hint">已被移出房间「${escapeHtml(b.roomName)}」</span>
+          <span style="flex:1"></span>
+          <button class="small" data-admin-action="roomunblock" data-room="${escapeHtml(b.roomId)}" data-member="${escapeHtml(b.member)}">解除（允许再加入）</button>
+        </div>
+      </div>`).join('');
+  const bans = admin.bans || [];
+  $('admin-bans').innerHTML = bans.length === 0
+    ? '<p class="hint">（无封禁设备）</p>'
+    : bans.map(id => `<div class="peer"><div class="peer-head"><b>${escapeHtml(id)}</b><span style="flex:1"></span><button class="small" data-admin-action="unban" data-device="${escapeHtml(id)}">解除封禁</button></div></div>`).join('');
+}
+
 function renderOnline() {
   if (!draft || $('tab-peers').hidden) {
     return;
@@ -280,8 +459,10 @@ $('btn-save').addEventListener('click', () => {
     config: draft,
     identity: wsState.identity,
     token: $('token').value,
+    adminToken: $('admin-token').value,
   });
   $('token').value = '';
+  $('admin-token').value = '';
 });
 
 $('btn-reload').addEventListener('click', () => {
@@ -307,6 +488,124 @@ $('btn-reset-loop').addEventListener('click', () => {
 
 $('btn-clear-history').addEventListener('click', () => {
   vscode.postMessage({ type: 'clearHistory' });
+});
+
+$('btn-create-room').addEventListener('click', () => {
+  const name = $('room-name').value.trim();
+  if (!name) {
+    // 不再静默返回：空名时明确提示，避免"点了没反应"
+    vscode.postMessage({ type: 'uiHint', message: '请先填写新房间名，再点「创建房间」' });
+    return;
+  }
+  roomOp('create', { name, password: $('room-password').value });
+  $('room-name').value = '';
+  $('room-password').value = '';
+});
+
+$('btn-refresh-rooms').addEventListener('click', () => {
+  vscode.postMessage({ type: 'refreshRooms' });
+});
+
+$('btn-refresh-admin').addEventListener('click', () => {
+  vscode.postMessage({ type: 'refreshAdmin' });
+});
+
+// 房间卡片内的按钮（内容动态重建，走事件委托）
+$('rooms').addEventListener('click', event => {
+  const btn = event.target.closest('button[data-room-action]');
+  if (!btn) {
+    return;
+  }
+  const card = btn.closest('.room');
+  const index = Number(card && card.dataset.room);
+  const room = ((state && state.rooms) || [])[index];
+  if (!room) {
+    return;
+  }
+  const input = key => {
+    const el = card.querySelector(`input[data-room-input="${key}"]`);
+    return el ? el.value : '';
+  };
+  const action = btn.dataset.roomAction;
+  if (action === 'join') {
+    roomOp('join', { roomId: room.id, password: input('join-password') });
+  } else if (action === 'leave') {
+    roomOp('leave', { roomId: room.id });
+  } else if (action === 'manage') {
+    if (expandedRooms.has(room.id)) {
+      expandedRooms.delete(room.id);
+    } else {
+      expandedRooms.add(room.id);
+    }
+    renderRooms();
+  } else if (action === 'rename') {
+    const name = input('rename').trim();
+    if (name) {
+      roomOp('rename', { roomId: room.id, name });
+    }
+  } else if (action === 'passwd') {
+    roomOp('passwd', { roomId: room.id, password: input('passwd') });
+  } else if (action === 'kick') {
+    if (armOrConfirm(`kick:${room.id}:${btn.dataset.member}`)) {
+      roomOp('kick', { roomId: room.id, memberId: btn.dataset.member });
+    } else {
+      renderRooms();
+    }
+  } else if (action === 'unblock') {
+    roomOp('unblock', { roomId: room.id, memberId: btn.dataset.member });
+  } else if (action === 'dissolve') {
+    if (armOrConfirm(`dissolve:${room.id}`)) {
+      roomOp('dissolve', { roomId: room.id });
+    } else {
+      renderRooms();
+    }
+  }
+});
+
+// 管理页按钮（内容动态重建，走事件委托）
+$('admin-devices').addEventListener('click', event => {
+  const btn = event.target.closest('button[data-admin-action]');
+  if (!btn) {
+    return;
+  }
+  const target = btn.dataset.device;
+  const action = btn.dataset.adminAction;
+  if (action === 'kick') {
+    if (armOrConfirm(`devkick:${target}`)) {
+      adminOp('kick', { target });
+    } else {
+      renderAdmin();
+    }
+  } else if (action === 'ban') {
+    if (armOrConfirm(`ban:${target}`)) {
+      adminOp('ban', { target });
+    } else {
+      renderAdmin();
+    }
+  } else if (action === 'roomkick') {
+    // 把某个成员从指定房间踢出（两步确认）
+    const roomId = btn.dataset.room;
+    if (armOrConfirm(`roomkick:${roomId}:${target}`)) {
+      roomOp('kick', { roomId, memberId: target });
+    } else {
+      renderAdmin();
+    }
+  }
+});
+
+// 房间移出名单：解除后该成员可凭密码重新加入
+$('admin-room-blocks').addEventListener('click', event => {
+  const btn = event.target.closest('button[data-admin-action="roomunblock"]');
+  if (btn) {
+    roomOp('unblock', { roomId: btn.dataset.room, memberId: btn.dataset.member });
+  }
+});
+
+$('admin-bans').addEventListener('click', event => {
+  const btn = event.target.closest('button[data-admin-action="unban"]');
+  if (btn) {
+    adminOp('unban', { target: btn.dataset.device });
+  }
 });
 
 $('relay-url').addEventListener('input', () => {

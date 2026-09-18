@@ -58,6 +58,20 @@ export class ReplyWaiter {
     waiter(env);
     return true;
   }
+
+  /**
+   * 消息被中继拒绝（如与目标没有共同房间）：让等待者立即以失败说明结束，不必空等到超时。
+   * @returns 是否命中了等待中的请求
+   */
+  fail(id: string, reason: string): boolean {
+    const waiter = this.waiters.get(id);
+    if (!waiter) {
+      return false;
+    }
+    this.waiters.delete(id);
+    waiter(makeEnvelope({ kind: 'reply', from: 'server', to: '', requestId: id, text: `【消息未送达】${reason}` }));
+    return true;
+  }
 }
 
 export interface ToolDeps {

@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
-import { ColleagueProfile } from './protocol';
+import { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
 import { AppConfig, ColleagueConfig, HistoryItem, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store, WorkspaceIdentity } from './store';
-import { TransportStatus } from './transport/types';
+import { ControlResult, TransportStatus } from './transport/types';
 
 interface PanelState {
   /** 全局配置；其中 identity 为“模板档案”，只用于给新工作区预填角色与负责内容 */
@@ -17,12 +17,22 @@ interface PanelState {
   messages: HistoryItem[];
   onlineIds: string[];
   identityMissing: string[];
+  /** 房间列表（中继下发）：可见域，未加入房间时看不到其他设备 */
+  rooms: RoomSummary[];
+  /** 管理员面板：令牌是否已设置、是否验证通过、在线设备与封禁名单 */
+  admin: { tokenSet: boolean; verified: boolean; devices: AdminDevice[]; bans: string[] };
+  /** 中继运行版本与协议号（连接成功后获取，供版本对照） */
+  relayInfo: { version: string; protocol: number };
+  /** 本扩展版本（版本门禁要求与中继一致） */
+  extensionVersion: string;
 }
 
 interface PanelDeps {
   getStatus(): TransportStatus;
   getOnlineIds(): string[];
   restart(): Promise<void>;
+  control(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  refreshAdmin(): Promise<void>;
 }
 
 export class ConsolePanel {
@@ -106,6 +116,10 @@ export class ConsolePanel {
       messages: this.store.listMessages(50),
       onlineIds: this.deps.getOnlineIds(),
       identityMissing: this.store.missingIdentityFields(),
+      rooms: this.store.getRooms(),
+      admin: { tokenSet: this.store.hasAdminToken(), ...this.store.getAdminState() },
+      relayInfo: this.store.getRelayInfo(),
+      extensionVersion: this.store.extensionVersion,
     };
   }
 
@@ -114,9 +128,12 @@ export class ConsolePanel {
       type?: string;
       config?: AppConfig;
       token?: string;
+      adminToken?: string;
       peerId?: string;
       enabled?: boolean;
       identity?: ColleagueProfile;
+      op?: string;
+      payload?: Record<string, unknown>;
     };
     switch (m.type) {
       case 'ready':
@@ -145,11 +162,82 @@ export class ConsolePanel {
         if (typeof m.token === 'string' && m.token.trim().length > 0) {
           await this.store.setToken(m.token.trim());
         }
+        if (typeof m.adminToken === 'string' && m.adminToken.trim().length > 0) {
+          await this.store.setAdminToken(m.adminToken.trim());
+          log('[panel] 已保存中继管理令牌');
+        }
         await this.deps.restart();
         this.postState(true);
         void vscode.window.showInformationMessage(
           `Copilot2Copilot：已保存本工作区档案（id=${this.store.identity.id || '未填'}）并应用`,
         );
+        break;
+      }
+      case 'roomOp': {
+        const op = String(m.op ?? '');
+        log(`[panel] 房间操作 ${op}`);
+        const result = await this.deps.control('room', op, m.payload);
+        const data = result.env?.payload as { rooms?: RoomSummary[] } | undefined;
+        if (result.ok && Array.isArray(data?.rooms)) {
+          this.store.setRooms(data.rooms);
+        }
+        const roomName = String((m.payload as { name?: string } | undefined)?.name ?? '');
+        const memberId = String((m.payload as { memberId?: string } | undefined)?.memberId ?? '');
+        if (!result.ok) {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '房间操作失败'}`);
+        } else {
+          if (op === 'create') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建房间「${roomName}」，把房间名与密码告诉同事，对方加入后即可互相看到`);
+          } else if (op === 'join') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已加入房间${roomName ? `「${roomName}」` : ''}，同房间成员会出现在列表中`);
+          } else if (op === 'kick') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${memberId} 移出房间（已进入「管理 → 房间移出名单」，可在那里解除）`);
+          } else if (op === 'unblock') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${memberId} 的房间移出限制，对方可凭密码重新加入`);
+          }
+          // 房间成员变化会影响管理页的设备行与房间移出名单：一并刷新
+          if (this.store.hasAdminToken()) {
+            await this.deps.refreshAdmin();
+          }
+        }
+        this.postState();
+        break;
+      }
+      case 'refreshRooms': {
+        const result = await this.deps.control('room', 'list');
+        const data = result.env?.payload as { rooms?: RoomSummary[] } | undefined;
+        if (result.ok && Array.isArray(data?.rooms)) {
+          this.store.setRooms(data.rooms);
+        } else if (!result.ok) {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '刷新房间列表失败'}`);
+        }
+        this.postState();
+        break;
+      }
+      case 'adminOp': {
+        const op = String(m.op ?? '');
+        log(`[panel] 管理操作 ${op}`);
+        const result = await this.deps.control('admin', op, m.payload);
+        if (!result.ok) {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '管理操作失败'}`);
+        } else {
+          log(`[panel] 管理操作 ${op} 已生效`);
+          const target = String((m.payload as { target?: string } | undefined)?.target ?? '');
+          if (op === 'ban') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已封禁 ${target}（它已断开且无法接入），可在「管理 → 封禁名单」解除`);
+          } else if (op === 'unban') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${target} 的封禁，对方会在 60 秒内自动重连`);
+          } else if (op === 'kick') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${target} 移出中继（60 秒后它会自动重试）`);
+          }
+        }
+        await this.deps.refreshAdmin();
+        this.postState();
+        break;
+      }
+      case 'refreshAdmin': {
+        await this.deps.refreshAdmin();
+        this.postState();
         break;
       }
       case 'clearHistory':
@@ -193,6 +281,11 @@ export class ConsolePanel {
       case 'uiError':
         log(`[panel] 界面脚本错误：${(m as { message?: string }).message ?? '(未知)'}`);
         break;
+      case 'uiHint':
+        // 界面侧的输入校验提示（如房间名为空）：转成 VS Code 弹窗，避免"点了没反应"
+        log(`[panel] 界面提示：${(m as { message?: string }).message ?? ''}`);
+        void vscode.window.showWarningMessage(`Copilot2Copilot：${(m as { message?: string }).message ?? ''}`);
+        break;
       case 'showLogs':
         showLogs();
         break;
@@ -229,6 +322,8 @@ export class ConsolePanel {
 <nav id="tabs">
   <button data-tab="conn" class="active">连接</button>
   <button data-tab="peers">Copilot 列表</button>
+  <button data-tab="rooms">房间</button>
+  <button data-tab="admin">管理</button>
   <button data-tab="inbox">收件箱</button>
   <button data-tab="behavior">行为</button>
 </nav>
@@ -238,7 +333,9 @@ export class ConsolePanel {
     <div id="relay-fields">
       <label>中继地址 <input id="relay-url" placeholder="wss://relay.example.com"></label>
       <label>中继令牌（可选） <input id="token" type="password" placeholder="留空表示保持不变"></label>
-      <p class="hint">令牌保存在系统密钥库（SecretStorage）。</p>
+      <label>中继管理令牌（可选） <input id="admin-token" type="password" placeholder="留空表示保持不变"></label>
+      <p class="hint">令牌保存在系统密钥库（SecretStorage）。管理令牌用于获得中继管理权限（查看/踢出/封禁在线设备，并对所有房间拥有所有者权限）；中继未配置管理令牌时该功能不可用。</p>
+      <p class="hint" id="relay-version"></p>
       <p class="hint">中继 id 即下面的「档案 id」，本机每个窗口各用各的档案，因此不会互相顶下线。</p>
     </div>
     <h2>本工作区档案（对方在其 Copilot 中可见）</h2>
@@ -258,6 +355,35 @@ export class ConsolePanel {
     </div>
     <p class="hint">列表由中继自动维护：只显示在线的 Copilot（对方下线后条目会自动消失），角色与负责内容由中继下发；不需要手工添加或编辑。</p>
     <div id="peers"></div>
+  </section>
+  <section id="tab-rooms" hidden>
+    <div class="section-head">
+      <h2>房间</h2>
+      <button id="btn-refresh-rooms">刷新</button>
+    </div>
+    <p class="hint">房间决定「谁能看到谁」：设备只能看到、并只能与同房间成员通信；<strong>未加入任何房间时与所有人互相不可见</strong>。创建房间后把密码告诉同事，对方加入即可互通。房间由创建者（所有者）管理：改密码、移出成员（移出后无法再凭密码加入，需所有者或管理员解除）、解散。</p>
+    <div id="room-create">
+      <label>新房间名 <input id="room-name" placeholder="如：订单服务组" maxlength="32"></label>
+      <label>加入密码（可选） <input id="room-password" type="password" placeholder="留空表示无需密码"></label>
+      <button id="btn-create-room" class="primary">创建房间</button>
+    </div>
+    <div id="rooms"></div>
+  </section>
+  <section id="tab-admin" hidden>
+    <div class="section-head">
+      <h2>管理</h2>
+      <button id="btn-refresh-admin">刷新</button>
+    </div>
+    <p class="hint" id="admin-hint"></p>
+    <h2>在线设备</h2>
+    <p class="hint">每行列出该设备所在的房间，点房间后面的「移出」可把它从<strong>那个房间</strong>踢出（两步确认：再点一次「确认移出」）；「踢出中继 / 封禁」则是设备级操作。</p>
+    <div id="admin-devices"></div>
+    <h2>房间移出名单</h2>
+    <p class="hint">被移出房间的成员无法再凭密码加入，只能在这里由管理员（或房间所有者）解除；这与下面的「中继封禁」是两回事。</p>
+    <div id="admin-room-blocks"></div>
+    <h2>中继封禁名单</h2>
+    <p class="hint">封禁的设备会被断开且无法接入，因此会从上面的在线列表消失，但仍列在这里；点「解除封禁」后对方会在 60 秒内自动重连。房间成员的封禁状态也会在该房间的成员列表里标注。</p>
+    <div id="admin-bans"></div>
   </section>
   <section id="tab-inbox" hidden>
     <div class="section-head"><h2>收件箱</h2><button id="btn-open-files">打开收件目录</button></div>

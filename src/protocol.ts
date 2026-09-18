@@ -3,7 +3,8 @@
  * relay/server.js 直接按同样的字段路由（不校验 kind），改动本文件时需同步中继。
  */
 
-export const PROTOCOL_VERSION = 1;
+/** 协议版本：v2 引入房间（可见域）、中继控制面与按接收者定制的 presence；中继按扩展版本号做接入门禁 */
+export const PROTOCOL_VERSION = 2;
 
 /** 文件通道：单个文件大小上限与分块大小（512 KiB 经 base64 约 683 KiB，低于中继 2 MiB 的单帧上限） */
 export const FILE_MAX_BYTES = 64 * 1024 * 1024;
@@ -23,8 +24,38 @@ export interface ColleagueProfile {
   scope: string;
 }
 
+/**
+ * 房间公开摘要（中继下发，按接收者定制）。
+ * 房间是可见域：只有同房间成员能互相看到并通信；
+ * members 仅同房间成员与管理员可见，blocked（禁止再加入名单）仅所有者与管理员可见。
+ */
+export interface RoomSummary {
+  id: string;
+  name: string;
+  ownerId: string;
+  hasPassword: boolean;
+  memberCount: number;
+  /** 请求者是否已在该房间中 */
+  joined: boolean;
+  members?: string[];
+  blocked?: string[];
+  /** 成员中被中继封禁（设备级）的 id：仅所有者与管理员可见；封禁需管理员解除，房主只能看到标注 */
+  bannedMembers?: string[];
+}
+
+/** 管理员视角的在线设备（仅 admin.list 下发） */
+export interface AdminDevice {
+  id: string;
+  /** 客户端上报的扩展版本（-testN 后缀会被中继忽略，但仍原样记录） */
+  version: string;
+  admin: boolean;
+  /** 所在房间 id */
+  roomIds: string[];
+}
+
 export type MessageKind = 'hello' | 'message' | 'reply' | 'presence' | 'offline'
-  | 'file-offer' | 'file-chunk' | 'file-ack' | 'file-end' | 'file-done';
+  | 'file-offer' | 'file-chunk' | 'file-ack' | 'file-end' | 'file-done'
+  | 'room' | 'admin' | 'room-event' | 'error';
 
 export interface MessageEnvelope {
   v: number;
@@ -49,6 +80,19 @@ export interface MessageEnvelope {
    * peers 仍是判定在线的依据；未上报档案的在线设备不会出现在这里。
    */
   profiles?: ColleagueProfile[];
+  /**
+   * 控制面（kind=room/admin）：操作名与请求/应答载荷。
+   * 请求由客户端发往 to='server'；中继的应答 id 与请求相同（用于关联），
+   * 载荷经 payload 回传（rooms / room / devices / bans 等）。
+   */
+  op?: string;
+  payload?: Record<string, unknown>;
+  /** 控制面应答：失败原因（ok=false 时） */
+  error?: string;
+  /** room-event：按接收者定制的房间列表 */
+  rooms?: RoomSummary[];
+  /** error（中继拒收回执）：被拒的原消息 id */
+  refId?: string;
   /** 文件通道：一次交接的编号，同时用作收件箱中该条记录的 id */
   transferId?: string;
   /** file-offer：待传文件的元数据 */
@@ -57,7 +101,7 @@ export interface MessageEnvelope {
   seq?: number;
   /** file-chunk：块的 base64 内容 */
   data?: string;
-  /** file-ack / file-done：是否成功 */
+  /** file-ack / file-done / 控制面应答（room/admin）：是否成功 */
   ok?: boolean;
   /** 失败原因（ok=false 时） */
   reason?: string;
@@ -89,5 +133,6 @@ export function isEnvelope(value: unknown): value is MessageEnvelope {
   const e = value as Partial<MessageEnvelope>;
   return typeof e.id === 'string' && typeof e.from === 'string' && typeof e.to === 'string'
     && (e.kind === 'hello' || e.kind === 'message' || e.kind === 'reply' || e.kind === 'presence' || e.kind === 'offline'
-      || e.kind === 'file-offer' || e.kind === 'file-chunk' || e.kind === 'file-ack' || e.kind === 'file-end' || e.kind === 'file-done');
+      || e.kind === 'file-offer' || e.kind === 'file-chunk' || e.kind === 'file-ack' || e.kind === 'file-end' || e.kind === 'file-done'
+      || e.kind === 'room' || e.kind === 'admin' || e.kind === 'room-event' || e.kind === 'error');
 }

@@ -26,6 +26,10 @@ export class Injector {
     if (env.kind === 'presence' || env.kind === 'hello') {
       return;
     }
+    if (env.kind === 'room' || env.kind === 'admin' || env.kind === 'room-event' || env.kind === 'error') {
+      // 控制面与中继回执由传输层处理，不应进入消息通道；此处兜底，防止被误当成同事消息注入
+      return;
+    }
     if (env.kind.startsWith('file-')) {
       // 文件通道全程由 FileHub 处理，落盘校验通过后才会回调 injectFile
       return;

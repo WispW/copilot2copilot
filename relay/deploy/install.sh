@@ -82,15 +82,18 @@ if [[ -f "$ENV_FILE" ]]; then
 else
   umask 077
   token="${TALK2COPILOT_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
+  admin_token="${TALK2COPILOT_ADMIN_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
   cat > "$ENV_FILE" <<EOF
 # talk2copilot 中继服务配置。改动后执行：systemctl restart ${UNIT_NAME}
 PORT=8787
 HOST=0.0.0.0
 TALK2COPILOT_TOKEN=${token}
+# 管理令牌：在扩展配置界面「连接 → 中继管理令牌」填入同一字符串即可获得管理权限
+TALK2COPILOT_ADMIN_TOKEN=${admin_token}
 LOG_LEVEL=info
 EOF
   chmod 600 "$ENV_FILE"
-  echo "已生成预共享密码，查看：sudo cat $ENV_FILE"
+  echo "已生成预共享密码与管理令牌，查看：sudo cat $ENV_FILE"
 fi
 
 echo "[5/6] 安装并启动 systemd 服务"
@@ -141,6 +144,15 @@ if [[ -z "$body" ]]; then
 fi
 
 echo "$body"
+# 版本门禁配套检查：/healthz 的中继版本必须与仓库 package.json 一致，
+# 否则客户端会因版本不一致被拒绝接入（4008）
+repo_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/package.json" | head -1)"
+body_version="$(printf '%s' "$body" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+if [[ -z "$body_version" ]]; then
+  echo "警告：/healthz 未返回版本号，运行中的可能仍是旧代码。请执行：sudo systemctl restart ${UNIT_NAME}" >&2
+elif [[ -n "$repo_version" && "$repo_version" != "$body_version" ]]; then
+  echo "警告：运行中的中继版本为 ${body_version}，仓库当前版本为 ${repo_version}，客户端将被版本门禁拒绝接入。请确认代码已同步部署。" >&2
+fi
 # 确认进程里跑的是本次安装的代码：/peers 是较新版本才有的端点，旧版会 404
 if command -v curl >/dev/null 2>&1; then
   peers_code="$(curl -s -o /dev/null -w '%{http_code}' "http://${probe_host}:${port}/peers" 2>/dev/null || echo 000)"
@@ -151,4 +163,6 @@ fi
 echo
 echo "安装完成。客户端「连接 → 中继模式」填写："
 echo "  地址 ws://<本机可达 IP>:${port}    密码见 sudo cat $ENV_FILE"
+echo "  管理令牌（可选，用于踢出/封禁/管理所有房间）见同一文件；不使用可留空。"
+echo "  注意：扩展版本必须与本中继版本一致（${repo_version:-见 package.json}），否则中继会拒绝接入（4008）。"
 echo "若本机只应经反向代理 / 隧道对外，请把 $ENV_FILE 里的 HOST 改为 127.0.0.1 后重启服务。"

@@ -244,3 +244,35 @@ details summary {
   border-left: 2px solid var(--vscode-focusBorder);
   word-break: break-word;
 }
+
+/* 房间卡片：沿用 .peer 的视觉语言，管理区默认折叠 */
+.room {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+
+.room .peer-head {
+  flex-wrap: wrap;
+}
+
+.room-manage {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--vscode-panel-border);
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  margin: 2px 2px 2px 0;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 0.9em;
+}
+
+.chip.me {
+  outline: 1px solid var(--vscode-focusBorder);
+}
