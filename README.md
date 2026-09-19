@@ -118,16 +118,16 @@ TALK2COPILOT_TOKEN=<你的密码> node relay/server.js 8787
 
 ```bash
 sudo systemctl status talk2copilot-relay    # 运行状态
-curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"0.5.0","protocol":2,"peers":..,"rooms":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true}
+curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"0.4.1","protocol":2,"peers":..,"rooms":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true}
 curl -s -H "Authorization: Bearer <密码>" http://127.0.0.1:8787/peers   # 在线 id 列表（客户端连接前会自查此接口）
 sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，可用 LOG_LEVEL 调级别）
 ```
 
 - `HOST` 默认 `0.0.0.0`，内网各机可直连；只允许反向代理 / 隧道访问时改为 `127.0.0.1`
-- **版本门禁（0.5.0 起）**：中继只放行扩展版本与自己一致的客户端。中继版本取 `relay/server.js` 顶部的 `RELAY_VERSION`（须与仓库 `package.json` 的 `version` 同步；`install.sh` 部署后会比对 `/healthz` 并告警）。**升级中继后必须同步升级所有客户端的扩展**，否则会被拒绝接入（4008，界面会提示双方版本）
-- **管理令牌（0.5.0 起）**：`TALK2COPILOT_ADMIN_TOKEN`，留空则管理功能整体关闭。在扩展「连接」页填入同一字符串即获得管理权限（查看/踢出/封禁在线设备、管理所有房间）；令牌错误不影响普通连接，只是没有管理权限。**就地升级旧版本时安装脚本会自动补一行**（想指定值就先 `TALK2COPILOT_ADMIN_TOKEN=... sudo -E ./install.sh`），部署后可用 `curl /healthz` 看 `adminEnabled` 是否为 true
+- **版本门禁（0.4.1 起）**：中继只放行扩展版本与自己一致的客户端。中继版本取 `relay/server.js` 顶部的 `RELAY_VERSION`（须与仓库 `package.json` 的 `version` 同步；`install.sh` 部署后会比对 `/healthz` 并告警）。**升级中继后必须同步升级所有客户端的扩展**，否则会被拒绝接入（4008，界面会提示双方版本）
+- **管理令牌（0.4.1 起）**：`TALK2COPILOT_ADMIN_TOKEN`，留空则管理功能整体关闭。在扩展「连接」页填入同一字符串即获得管理权限（查看/踢出/封禁在线设备、管理所有房间）；令牌错误不影响普通连接，只是没有管理权限。**就地升级旧版本时安装脚本会自动补一行**（想指定值就先 `TALK2COPILOT_ADMIN_TOKEN=... sudo -E ./install.sh`），部署后可用 `curl /healthz` 看 `adminEnabled` 是否为 true
 - **封禁名单**落盘在 systemd `StateDirectory`（`/var/lib/talk2copilot-relay/bans.json`，单元已声明 `StateDirectory=talk2copilot-relay`），重启保留；**房间是内存态**，重启中继即消失，需要重新创建
-- **房间可见性（0.5.0 起）**：设备只能看到并只能与同房间成员通信；**未加入任何房间的设备与所有人互相不可见**。因此升级/部署 0.5.0 后请**先创建一个房间并把同事加进去**，否则双方的 Copilot 列表会是空的
+- **房间可见性（0.4.1 起）**：设备只能看到并只能与同房间成员通信；**未加入任何房间的设备与所有人互相不可见**。因此升级/部署 0.4.1 后请**先创建一个房间并把同事加进去**，否则双方的 Copilot 列表会是空的
 - 收到 `SIGTERM`（`systemctl stop` / `restart`）时先给客户端发关闭帧再退出，客户端会自动重连
 - 在线名单、**在线档案目录**与离线暂存都在内存中，**重启服务端会丢弃暂存的离线消息**；在线设备重连后会自动重新上报档案
 - **在线档案目录（0.4.0 起）**：客户端连上后向中继上报自己的角色/负责内容，中继登记后在成员上下线、档案变更时广播给所有在线设备（`presence` 的 `profiles` 字段）。未升级的中继只广播在线 id（`peers`），此时客户端拿不到对方的角色/负责内容（显示「档案未同步」，无法收发消息）——请同步升级中继
