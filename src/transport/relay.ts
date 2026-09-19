@@ -5,9 +5,11 @@ import { RawData, WebSocket } from 'ws';
 import { log, logError } from '../logger';
 import { isEnvelope, makeEnvelope, MessageEnvelope } from '../protocol';
 import { colleagueEnabled, Store } from '../store';
-import { Transport, TransportStatus } from './types';
+import { ControlResult, Transport, TransportStatus } from './types';
 
 const MAX_RETRY_MS = 30_000;
+/** 控制面请求（房间 / 管理）的应答超时 */
+const CONTROL_TIMEOUT_MS = 8000;
 
 /** 4xxx 关闭码表示配置或身份问题；4004/4005 也可能是断电后残留连接未清理，
  *  收到后延迟自动重试，由服务端裁决（死连接被接管、活连接继续拒绝） */
@@ -24,6 +26,8 @@ export class RelayTransport implements Transport {
   readonly onMessage = this.messageEmitter.event;
   private readonly statusEmitter = new vscode.EventEmitter<TransportStatus>();
   readonly onStatus = this.statusEmitter.event;
+  private readonly rejectedEmitter = new vscode.EventEmitter<MessageEnvelope>();
+  readonly onRejected = this.rejectedEmitter.event;
 
   private ws?: WebSocket;
   private queue: MessageEnvelope[] = [];
@@ -31,6 +35,10 @@ export class RelayTransport implements Transport {
   private timer?: ReturnType<typeof setTimeout>;
   private running = false;
   private token = '';
+  /** 中继管理令牌（可选）：随握手上报，通过即获得管理权限 */
+  private adminToken = '';
+  /** 控制面请求等待中的应答回调：中继应答的 id 与请求相同，据此关联 */
+  private readonly pending = new Map<string, (result: ControlResult) => void>();
   private onlinePeers = new Set<string>();
   /** 已明确通告下线的同事（收到其任何消息后恢复在线） */
   private readonly offlinePeers = new Set<string>();
@@ -40,7 +48,8 @@ export class RelayTransport implements Transport {
   async start(): Promise<void> {
     this.running = true;
     this.token = await this.store.getToken();
-    log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'}`);
+    this.adminToken = await this.store.getAdminToken();
+    log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'} 扩展版本=${this.store.extensionVersion || '(未知)'}${this.adminToken ? ' 管理令牌=已设置' : ''}`);
     this.connect();
   }
 
@@ -55,6 +64,7 @@ export class RelayTransport implements Transport {
     this.ws = undefined;
     this.queue = [];
     this.onlinePeers.clear();
+    this.failPending('通信通道已停止');
     this.statusEmitter.fire({ state: 'stopped', detail: '中继模式已停止' });
   }
 
@@ -171,11 +181,19 @@ export class RelayTransport implements Transport {
       return;
     }
     const wsUrl = `${url.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(myId)}`;
-    log(`[relay] 连接中继 ${wsUrl}${this.token ? '（携带令牌）' : ''}`);
+    // 版本门禁：上报扩展版本（中继按它决定是否放行）；管理令牌可选，错误不影响普通连接
+    const headers: Record<string, string> = { 'x-client-version': this.store.extensionVersion };
+    if (this.token) {
+      headers.authorization = `Bearer ${this.token}`;
+    }
+    if (this.adminToken) {
+      headers['x-admin-token'] = this.adminToken;
+    }
+    log(`[relay] 连接中继 ${wsUrl}（扩展版本 ${this.store.extensionVersion || '未知'}）${this.token ? '（携带令牌）' : ''}${this.adminToken ? '（携带管理令牌）' : ''}`);
     let ws: WebSocket;
     try {
       ws = new WebSocket(wsUrl, {
-        headers: this.token ? { authorization: `Bearer ${this.token}` } : undefined,
+        headers,
         handshakeTimeout: 8000,
       });
     } catch (err) {
@@ -189,6 +207,7 @@ export class RelayTransport implements Transport {
       log('[relay] 已连接中继服务器');
       this.retryMs = 1000;
       this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
+      this.fetchRelayInfo(url);
       const identity = this.store.config.identity;
       // 向中继上报自己的档案（to='server' 由中继登记后广播给所有在线设备），中继是档案的权威来源
       log(`[relay] 向中继上报档案（角色=${identity.role || '空'} 负责=${identity.scope || '空'}）`);
@@ -207,7 +226,33 @@ export class RelayTransport implements Transport {
     });
     ws.on('close', (code, reason) => {
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reason.toString() || '(空)'}`);
+      this.failPending('与中继的连接已断开');
       if (!this.running) {
+        return;
+      }
+      const reasonText = reason.toString();
+      // 被管理员封禁：定期重试（解封后自动恢复，无需人工干预）；重连期间服务端会以 4007 继续拒绝
+      if (code === 4007) {
+        log('[relay] 收到 4007：已被管理员封禁，60 秒后自动重试');
+        this.statusEmitter.fire({ state: 'offline', detail: '已被管理员封禁，无法连接本中继（解封后会自动恢复，每 60 秒重试一次）' });
+        this.retryMs = 60000;
+        this.scheduleReconnect();
+        return;
+      }
+      // 版本门禁：扩展与中继必须同步升级
+      if (code === 4008) {
+        this.statusEmitter.fire({
+          state: 'offline',
+          detail: `扩展版本（${this.store.extensionVersion || '未知'}）未通过中继版本门禁：${reasonText || '版本不一致'}。请升级扩展或联系管理员升级中继，然后点「保存并应用」重试`,
+        });
+        return;
+      }
+      // 被管理员踢出：属临时处罚，延迟重试
+      if (code === 4006) {
+        log('[relay] 收到 4006：已被管理员移出中继，60 秒后自动重试');
+        this.statusEmitter.fire({ state: 'offline', detail: '已被管理员移出中继。正在自动重试…' });
+        this.retryMs = 60000;
+        this.scheduleReconnect();
         return;
       }
       const fatal = FATAL_CLOSE_REASONS[code];
@@ -247,6 +292,28 @@ export class RelayTransport implements Transport {
       return;
     }
     if (!isEnvelope(parsed)) {
+      return;
+    }
+    // 控制面：房间 / 管理应答按请求 id 关联；两类都不进消息通道
+    if (parsed.kind === 'room' || parsed.kind === 'admin') {
+      const resolve = this.pending.get(parsed.id);
+      if (resolve) {
+        this.pending.delete(parsed.id);
+        resolve({ ok: parsed.ok === true, error: parsed.error, env: parsed });
+      } else {
+        log(`[relay] 收到未匹配的控制面应答（op=${parsed.op ?? '(空)'}），已忽略`);
+      }
+      return;
+    }
+    if (parsed.kind === 'room-event') {
+      const rooms = Array.isArray(parsed.rooms) ? parsed.rooms : [];
+      log(`[relay] 房间列表更新：${rooms.length} 个房间`);
+      this.store.setRooms(rooms);
+      return;
+    }
+    if (parsed.kind === 'error') {
+      log(`[relay] 中继拒收回执：${parsed.error ?? '(无原因)'}（原消息 ${parsed.refId || '(未知)'}）`);
+      this.rejectedEmitter.fire(parsed);
       return;
     }
     if (parsed.kind === 'presence') {
@@ -305,5 +372,84 @@ export class RelayTransport implements Transport {
 
   private refreshPresenceStatus(): void {
     this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
+  }
+
+  /** 连接断开/停止时让等待中的控制面请求立即失败，避免空等到超时 */
+  private failPending(reason: string): void {
+    const waiting = [...this.pending.values()];
+    this.pending.clear();
+    for (const resolve of waiting) {
+      resolve({ ok: false, error: reason });
+    }
+  }
+
+  /**
+   * 中继控制面操作（房间 / 管理）：请求发往 to='server'，中继应答的 id 与请求相同。
+   * 未连接或超时（旧版中继不认识该操作）时返回 ok=false，由界面提示。
+   */
+  controlOp(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return Promise.resolve({ ok: false, error: '未连接中继服务器，无法执行该操作' });
+    }
+    const env = makeEnvelope({ kind, from: this.myRelayId(), to: 'server', op, payload });
+    return new Promise<ControlResult>(resolve => {
+      const timer = setTimeout(() => {
+        this.pending.delete(env.id);
+        resolve({ ok: false, error: '中继未响应（可能服务端版本过旧，请升级中继后重试）' });
+      }, CONTROL_TIMEOUT_MS);
+      this.pending.set(env.id, result => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      log(`[relay] 控制面请求 ${kind}/${op}（消息 ${env.id}）`);
+      try {
+        this.ws?.send(JSON.stringify(env));
+      } catch (err) {
+        // 连接在检查与发送之间断开：立刻失败，避免等待悬空
+        clearTimeout(timer);
+        this.pending.delete(env.id);
+        resolve({ ok: false, error: `控制面请求发送失败：${(err as Error).message}` });
+      }
+    });
+  }
+
+  /** 询问 /healthz 获取中继运行版本（仅展示用；版本门禁由握手时的 4008 判定） */
+  private fetchRelayInfo(url: string): void {
+    let target: URL;
+    try {
+      target = new URL(`${url.replace(/^ws/, 'http').replace(/\/+$/, '')}/healthz`);
+    } catch {
+      return;
+    }
+    const send = target.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = send(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || undefined,
+        path: target.pathname,
+        method: 'GET',
+        timeout: 4000,
+      },
+      res => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => (body += chunk));
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(body) as { version?: unknown; protocol?: unknown };
+            this.store.setRelayInfo(
+              typeof parsed.version === 'string' ? parsed.version : '',
+              typeof parsed.protocol === 'number' ? parsed.protocol : 0,
+            );
+          } catch {
+            // /healthz 不可解析：界面显示为空即可
+          }
+        });
+      },
+    );
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => undefined);
+    req.end();
   }
 }

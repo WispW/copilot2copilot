@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { ColleagueProfile } from './protocol';
+import { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
 import { log } from './logger';
 
 export interface ColleagueConfig {
@@ -116,12 +116,28 @@ export class Store {
   private wsIdentity: WorkspaceIdentity = {};
   /** 手动重置熔断计数的起点：只统计此刻之后的往来 */
   private loopResetAt = 0;
+  /** 房间列表（中继下发的可见域摘要）：仅内存缓存，连上后由中继下发 */
+  private rooms: RoomSummary[] = [];
+  /** 管理员视角的在线设备与封禁名单：由 admin.list 应答刷新的内存快照 */
+  private adminDevices: AdminDevice[] = [];
+  private adminBans: string[] = [];
+  private adminVerified = false;
+  private adminTokenSet = false;
+  /** 中继运行版本与协议号：连接成功后从 /healthz 获取，供界面展示 */
+  private relayInfo: { version: string; protocol: number } = { version: '', protocol: 0 };
+  /** 本扩展版本：连接时上报，中继按它做版本门禁 */
+  readonly extensionVersion: string;
 
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const dir = context.globalStorageUri.fsPath;
+    this.extensionVersion = context.extension.packageJSON.version as string;
+    void context.secrets.get('talk2copilot.adminToken').then(value => {
+      this.adminTokenSet = Boolean(value);
+      this.changeEmitter.fire();
+    }, () => undefined);
     fs.mkdirSync(dir, { recursive: true });
     this.configPath = path.join(dir, 'config.json');
     this.historyPath = path.join(dir, 'history.json');
@@ -440,5 +456,50 @@ export class Store {
 
   async setToken(token: string): Promise<void> {
     await this.context.secrets.store('talk2copilot.token', token);
+  }
+
+  /** 中继管理令牌（admin 权限）：与连接令牌分开存放 */
+  async getAdminToken(): Promise<string> {
+    return (await this.context.secrets.get('talk2copilot.adminToken')) ?? '';
+  }
+
+  async setAdminToken(token: string): Promise<void> {
+    await this.context.secrets.store('talk2copilot.adminToken', token);
+    this.adminTokenSet = true;
+    this.changeEmitter.fire();
+  }
+
+  /** 是否已设置管理令牌（供界面回显） */
+  hasAdminToken(): boolean {
+    return this.adminTokenSet;
+  }
+
+  getRooms(): RoomSummary[] {
+    return this.rooms;
+  }
+
+  setRooms(list: RoomSummary[]): void {
+    this.rooms = Array.isArray(list) ? list : [];
+    this.changeEmitter.fire();
+  }
+
+  getAdminState(): { devices: AdminDevice[]; bans: string[]; verified: boolean } {
+    return { devices: this.adminDevices, bans: this.adminBans, verified: this.adminVerified };
+  }
+
+  setAdminState(devices: AdminDevice[], bans: string[], verified: boolean): void {
+    this.adminDevices = devices;
+    this.adminBans = bans;
+    this.adminVerified = verified;
+    this.changeEmitter.fire();
+  }
+
+  getRelayInfo(): { version: string; protocol: number } {
+    return this.relayInfo;
+  }
+
+  setRelayInfo(version: string, protocol: number): void {
+    this.relayInfo = { version, protocol };
+    this.changeEmitter.fire();
   }
 }
