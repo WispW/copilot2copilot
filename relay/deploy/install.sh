@@ -79,6 +79,12 @@ fi
 echo "[4/6] 准备配置 $ENV_FILE"
 if [[ -f "$ENV_FILE" ]]; then
   echo "配置已存在，保留原样"
+  # 就地升级：旧配置通常没有管理令牌，缺则补一行——否则升级后管理功能会静默关闭（adminEnabled=false）
+  if ! grep -q '^TALK2COPILOT_ADMIN_TOKEN=' "$ENV_FILE"; then
+    admin_token="${TALK2COPILOT_ADMIN_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
+    printf '\n# 管理令牌（安装脚本在升级时自动补充）：在扩展「连接 → 中继管理令牌」填入同一字符串\nTALK2COPILOT_ADMIN_TOKEN=%s\n' "$admin_token" >> "$ENV_FILE"
+    echo "已为既有配置补充管理令牌（查看：sudo cat $ENV_FILE）"
+  fi
 else
   umask 077
   token="${TALK2COPILOT_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"

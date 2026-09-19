@@ -38,6 +38,8 @@ export interface RoomSummary {
   /** 请求者是否已在该房间中 */
   joined: boolean;
   members?: string[];
+  /** 成员中当前在线的 id（与 members 同权限可见）：用于界面标注离线成员 */
+  onlineMembers?: string[];
   blocked?: string[];
   /** 成员中被中继封禁（设备级）的 id：仅所有者与管理员可见；封禁需管理员解除，房主只能看到标注 */
   bannedMembers?: string[];

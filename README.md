@@ -125,7 +125,7 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 
 - `HOST` 默认 `0.0.0.0`，内网各机可直连；只允许反向代理 / 隧道访问时改为 `127.0.0.1`
 - **版本门禁（0.5.0 起）**：中继只放行扩展版本与自己一致的客户端。中继版本取 `relay/server.js` 顶部的 `RELAY_VERSION`（须与仓库 `package.json` 的 `version` 同步；`install.sh` 部署后会比对 `/healthz` 并告警）。**升级中继后必须同步升级所有客户端的扩展**，否则会被拒绝接入（4008，界面会提示双方版本）
-- **管理令牌（0.5.0 起）**：`TALK2COPILOT_ADMIN_TOKEN`，留空则管理功能整体关闭。在扩展「连接」页填入同一字符串即获得管理权限（查看/踢出/封禁在线设备、管理所有房间）；令牌错误不影响普通连接，只是没有管理权限
+- **管理令牌（0.5.0 起）**：`TALK2COPILOT_ADMIN_TOKEN`，留空则管理功能整体关闭。在扩展「连接」页填入同一字符串即获得管理权限（查看/踢出/封禁在线设备、管理所有房间）；令牌错误不影响普通连接，只是没有管理权限。**就地升级旧版本时安装脚本会自动补一行**（想指定值就先 `TALK2COPILOT_ADMIN_TOKEN=... sudo -E ./install.sh`），部署后可用 `curl /healthz` 看 `adminEnabled` 是否为 true
 - **封禁名单**落盘在 systemd `StateDirectory`（`/var/lib/talk2copilot-relay/bans.json`，单元已声明 `StateDirectory=talk2copilot-relay`），重启保留；**房间是内存态**，重启中继即消失，需要重新创建
 - **房间可见性（0.5.0 起）**：设备只能看到并只能与同房间成员通信；**未加入任何房间的设备与所有人互相不可见**。因此升级/部署 0.5.0 后请**先创建一个房间并把同事加进去**，否则双方的 Copilot 列表会是空的
 - 收到 `SIGTERM`（`systemctl stop` / `restart`）时先给客户端发关闭帧再退出，客户端会自动重连

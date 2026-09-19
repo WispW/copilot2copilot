@@ -297,17 +297,19 @@ function renderRooms() {
     const canManage = owner || verified;
     const chip = m => `<span class="chip${m === myId ? ' me' : ''}">${escapeHtml(m)}</span>`;
     const relayBanned = new Set(Array.isArray(room.bannedMembers) ? room.bannedMembers : []);
+    const relayOnline = Array.isArray(room.onlineMembers) ? new Set(room.onlineMembers) : undefined;
     const memberChips = Array.isArray(room.members)
       ? room.members.map(m => {
         const armed = isArmed(`kick:${room.id}:${m}`);
         const bannedHint = relayBanned.has(m) ? ' <span class="hint conflict">已被中继封禁（需管理员解封）</span>' : '';
-        return `${chip(m)}${bannedHint}${canManage && m !== room.ownerId
+        const offlineHint = relayOnline && !relayOnline.has(m) ? ' <span class="hint">（离线）</span>' : '';
+        return `${chip(m)}${offlineHint}${bannedHint}${canManage && m !== room.ownerId
           ? ` <button class="small${armed ? ' danger' : ''}" data-room-action="kick" data-member="${escapeHtml(m)}">${armed ? '确认移出' : '移出'}</button>`
           : ''}`;
       }).join(' ')
       : '';
     const memberSection = memberChips
-      ? `<p class="hint">成员（${room.memberCount}）：</p><p>${memberChips}</p>`
+      ? `<p class="hint">成员（${room.memberCount}${relayOnline ? `，在线 ${relayOnline.size}` : ''}）：</p><p>${memberChips}</p>`
       : `<p class="hint">成员：${room.memberCount} 人（加入后可查看明细）</p>`;
     const blockedSection = canManage && Array.isArray(room.blocked) && room.blocked.length > 0
       ? `<p class="hint">禁止再加入（解除后可凭密码重新加入）：</p><p>${room.blocked.map(m => `${chip(m)} <button class="small" data-room-action="unblock" data-member="${escapeHtml(m)}">解除</button>`).join(' ')}</p>`

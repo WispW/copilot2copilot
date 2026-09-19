@@ -238,7 +238,11 @@ function roomSummary(room, viewerId, isAdmin) {
     hasPassword: Boolean(room.passHash),
     memberCount: room.members.size,
     joined: mine,
-    ...(mine || isAdmin ? { members: [...room.members] } : {}),
+    // 成员集合在设备离线后仍保留（房间是可见域），在线情况另给一份，供界面标注「离线」
+    ...(mine || isAdmin ? {
+      members: [...room.members],
+      onlineMembers: [...room.members].filter(member => peers.has(member)),
+    } : {}),
     ...(privileged ? { blocked: [...room.blocked] } : {}),
     // 设备级封禁（中继层）的成员：让房主知道"人不见了/连不上"是中继封禁，需管理员解封
     ...(privileged ? { bannedMembers: [...room.members].filter(member => banned.has(member)) } : {}),
@@ -694,9 +698,8 @@ wss.on('connection', (ws, req) => {
     }
     log('info', `补发离线消息 ${pending.length} 条给 ${id}`);
   }
-  broadcastPresence();
-  // 立即下发该设备视角的房间列表（可见性由房间决定，UI 需要它来提示"创建或加入房间"）
-  send(ws, roomEventPayload(id, ws.isAdmin === true));
+  touchRooms();
+  // 房间摘要含在线成员：上下线会改变它，因此这里用 touchRooms（presence + room-event）而不是只广播 presence
 
   ws.on('message', data => {
     if (shuttingDown) {
@@ -758,9 +761,28 @@ wss.on('connection', (ws, req) => {
       }
       return;
     }
+    // 身份绑定：from 一律改写为连接的真实 id，并丢弃客户端自带的档案——
+    // 否则同房间成员可冒充他人（用对方 id 发消息、伪造角色）投递；档案以本连接经 to='server' 上报的为准
+    env.from = id;
+    delete env.profile;
     const target = peers.get(env.to);
     if (target && target.readyState === target.OPEN) {
       send(target, env);
+    } else if (banned.has(env.to)) {
+      // 封禁目标不再暂存（否则解封后会一次性补发陈年消息），并向发送方回执
+      log('debug', '目标已被中继封禁，消息不暂存', { from: id, to: env.to, kind: env.kind });
+      if (env.kind !== 'offline') {
+        send(ws, {
+          v: 1,
+          kind: 'error',
+          id: `err-${++seq}`,
+          from: 'server',
+          to: id,
+          ts: Date.now(),
+          refId: typeof env.id === 'string' ? env.id : '',
+          error: `${env.to} 已被中继管理员封禁，消息未送达`,
+        });
+      }
     } else {
       const list = offline.get(env.to) || [];
       list.push(env);
@@ -779,7 +801,8 @@ wss.on('connection', (ws, req) => {
       profiles.delete(id);
       log('info', `${id} 已离线`, { online: peers.size });
       if (!shuttingDown) {
-        broadcastPresence();
+        // 在场成员离线同样会改变房间摘要里的在线成员，需一并下发 room-event
+        touchRooms();
       }
     }
   });
