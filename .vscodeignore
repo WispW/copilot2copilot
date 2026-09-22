@@ -5,6 +5,8 @@ relay/**
 esbuild.mjs
 tsconfig.json
 .gitignore
+# 本机自用的发布脚本（不入库），不能被打进扩展包
+publish.sh
 **/*.map
 # 图标加工用的位图源文件（不打进扩展包）
 111.png
