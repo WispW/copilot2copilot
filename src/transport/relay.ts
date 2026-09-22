@@ -7,17 +7,20 @@ import { isEnvelope, makeEnvelope, MessageEnvelope } from '../protocol';
 import { colleagueEnabled, Store } from '../store';
 import { ControlResult, Transport, TransportStatus } from './types';
 
-const MAX_RETRY_MS = 30_000;
 /** 控制面请求（房间 / 管理）的应答超时 */
 const CONTROL_TIMEOUT_MS = 8000;
 
-/** 4xxx 关闭码表示配置或身份问题；4004/4005 也可能是断电后残留连接未清理，
- *  收到后延迟自动重试，由服务端裁决（死连接被接管、活连接继续拒绝） */
-const FATAL_CLOSE_REASONS: Record<number, string> = {
-  4001: '中继令牌不正确',
-  4002: '未向中继声明本机 id',
-  4004: '该中继 id 已被另一个窗口占用，本窗口被顶下线',
-  4005: '该中继 id 已被另一个窗口占用',
+/**
+ * 连接中断后的界面文案。本扩展**不做任何自动重连**：无论哪种失败都停在离线态，
+ * 由用户点「重试连接」再次尝试，避免配置错误时无限制地向中继发起连接。
+ */
+const CLOSE_REASON_TEXT: Record<number, string> = {
+  4001: '中继令牌不正确，请修改令牌后点「保存并应用」',
+  4002: '未向中继声明本机 id，请填写档案 id 后点「保存并应用」',
+  4005: '该中继 id 已被另一个窗口占用（若确认旧窗口已关闭，可点「重试连接」）',
+  4006: '已被管理员移出中继（需联系管理员恢复，之后点「重试连接」）',
+  4007: '已被管理员封禁（解封后点「重试连接」）',
+  4008: '扩展版本未通过中继版本门禁，需与中继同步升级',
 };
 
 /** 中继模式：双方都连接中继服务器，由服务器转发并代存离线消息 */
@@ -31,8 +34,6 @@ export class RelayTransport implements Transport {
 
   private ws?: WebSocket;
   private queue: MessageEnvelope[] = [];
-  private retryMs = 1000;
-  private timer?: ReturnType<typeof setTimeout>;
   private running = false;
   private token = '';
   /** 中继管理令牌（可选）：随握手上报，通过即获得管理权限 */
@@ -56,14 +57,12 @@ export class RelayTransport implements Transport {
   async stop(): Promise<void> {
     log('[relay] 停止');
     this.running = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
     this.ws?.close();
     this.ws = undefined;
-    this.queue = [];
+    // 保留 queue：断开后重新连接时会补发，用户不会因为断开而丢消息；
+    // 在线/离线名单是上一次会话的缓存，重连后由中继的 presence 重建
     this.onlinePeers.clear();
+    this.offlinePeers.clear();
     this.failPending('通信通道已停止');
     this.statusEmitter.fire({ state: 'stopped', detail: '中继模式已停止' });
   }
@@ -167,8 +166,9 @@ export class RelayTransport implements Transport {
     const { url } = this.store.config.relay;
     const myId = this.myRelayId();
     if (!url || !myId) {
-      log('[relay] 未配置中继地址或档案 id，无法连接');
-      this.statusEmitter.fire({ state: 'offline', detail: '未配置中继服务器地址或档案 id' });
+      const missing = [!url ? '中继服务器地址' : '', !myId ? '档案 id' : ''].filter(Boolean).join('与');
+      log(`[relay] 未配置${missing}，无法连接`);
+      this.statusEmitter.fire({ state: 'offline', detail: `未配置${missing}，请填写后点「保存并应用」` });
       return;
     }
     this.statusEmitter.fire({ state: 'connecting', detail: '正在连接中继服务器...' });
@@ -205,7 +205,6 @@ export class RelayTransport implements Transport {
     this.ws = ws;
     ws.on('open', () => {
       log('[relay] 已连接中继服务器');
-      this.retryMs = 1000;
       this.statusEmitter.fire({ state: 'online', detail: '已连接中继服务器' });
       this.fetchRelayInfo(url);
       const identity = this.store.config.identity;
@@ -225,62 +224,37 @@ export class RelayTransport implements Transport {
       logError('[relay] 连接出错', err);
     });
     ws.on('close', (code, reason) => {
-      log(`[relay] 与中继的连接关闭：code=${code} reason=${reason.toString() || '(空)'}`);
+      // 已被 stop() 或下一次连接替换：属上一个会话，不能改写当前会话的状态与在途请求
+      if (this.ws !== ws) {
+        log(`[relay] 忽略上一个会话的关闭事件（code=${code}）`);
+        return;
+      }
+      this.ws = undefined;
+      const reasonText = reason.toString();
+      log(`[relay] 与中继的连接关闭：code=${code} reason=${reasonText || '(空)'}`);
       this.failPending('与中继的连接已断开');
       if (!this.running) {
         return;
       }
-      const reasonText = reason.toString();
-      // 被管理员封禁：定期重试（解封后自动恢复，无需人工干预）；重连期间服务端会以 4007 继续拒绝
-      if (code === 4007) {
-        log('[relay] 收到 4007：已被管理员封禁，60 秒后自动重试');
-        this.statusEmitter.fire({ state: 'offline', detail: '已被管理员封禁，无法连接本中继（解封后会自动恢复，每 60 秒重试一次）' });
-        this.retryMs = 60000;
-        this.scheduleReconnect();
-        return;
-      }
-      // 版本门禁：扩展与中继必须同步升级
-      if (code === 4008) {
-        this.statusEmitter.fire({
-          state: 'offline',
-          detail: `扩展版本（${this.store.extensionVersion || '未知'}）未通过中继版本门禁：${reasonText || '版本不一致'}。请升级扩展或联系管理员升级中继，然后点「保存并应用」重试`,
-        });
-        return;
-      }
-      // 被管理员踢出：属临时处罚，延迟重试
-      if (code === 4006) {
-        log('[relay] 收到 4006：已被管理员移出中继，60 秒后自动重试');
-        this.statusEmitter.fire({ state: 'offline', detail: '已被管理员移出中继。正在自动重试…' });
-        this.retryMs = 60000;
-        this.scheduleReconnect();
-        return;
-      }
-      const fatal = FATAL_CLOSE_REASONS[code];
-      if (fatal) {
-        // 断电/断网重启后，服务端旧连接可能仍在清理中；不再永久停止自动重连，
-        // 改为延迟重试——服务端对活连接仍会拒绝（不会顶掉对方窗口），
-        // 死连接被接管后，下次连接即可成功。
-        log(`[relay] 收到 ${code}（${fatal}），30 秒后自动重试`);
-        this.statusEmitter.fire({ state: 'offline', detail: `${fatal}。正在自动重试…` });
-        this.retryMs = 30000;
-        this.scheduleReconnect();
-        return;
-      }
-      this.scheduleReconnect();
-      this.statusEmitter.fire({ state: 'offline', detail: '与中继服务器断开，重连中...' });
+      // 不自动重连：任何中断都停在离线态，文案里写明用户下一步要做什么
+      this.statusEmitter.fire({ state: 'offline', detail: this.describeClose(code, reasonText) });
     });
   }
 
-  private scheduleReconnect(): void {
-    if (!this.running || this.timer) {
-      return;
+  /** 关闭码 → 界面文案；本扩展不做自动重连，因此文案必须给出下一步动作 */
+  private describeClose(code: number, reasonText: string): string {
+    const suffix = reasonText ? `（中继说明：${reasonText}）` : '';
+    if (code === 4008) {
+      return `扩展版本（${this.store.extensionVersion || '未知'}）未通过中继版本门禁：${reasonText || '版本不一致'}。请升级扩展或联系管理员升级中继，然后点「保存并应用」`;
     }
-    log(`[relay] 将在 ${this.retryMs}ms 后重连中继`);
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      this.retryMs = Math.min(this.retryMs * 2, MAX_RETRY_MS);
-      this.connect();
-    }, this.retryMs);
+    const mapped = CLOSE_REASON_TEXT[code];
+    if (mapped) {
+      return `${mapped}${suffix}`;
+    }
+    if (code === 1005 || code === 1006) {
+      return `无法连接中继服务器（请检查中继地址、网络，以及中继是否在运行），点「重试连接」再次尝试`;
+    }
+    return `与中继服务器的连接已断开（关闭码 ${code}），点「重试连接」再次尝试${suffix}`;
   }
 
   private handleRaw(data: RawData): void {

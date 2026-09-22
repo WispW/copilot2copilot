@@ -115,7 +115,7 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
+      throw new Error('通信通道未连接。请打开 Copilot2Copilot 界面点「连接」，并确认中继地址、令牌与档案 id 无误。');
     }
     const identity = store.config.identity;
     const missingSelf = store.missingIdentityFields();
@@ -296,7 +296,7 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
     const input = options.input;
     const transport = getTransport();
     if (!transport) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
+      throw new Error('通信通道未连接。请打开 Copilot2Copilot 界面点「连接」，并确认中继地址、令牌与档案 id 无误。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {
@@ -403,7 +403,7 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
     const { store, fileHub } = this.deps;
     const input = options.input;
     if (!this.deps.getTransport()) {
-      throw new Error('通信通道未启动。请打开 Copilot2Copilot 配置界面检查中继地址与连接状态。');
+      throw new Error('通信通道未连接。请打开 Copilot2Copilot 界面点「连接」，并确认中继地址、令牌与档案 id 无误。');
     }
     const missingSelf = store.missingIdentityFields();
     if (missingSelf.length > 0) {

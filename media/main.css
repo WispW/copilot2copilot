@@ -11,6 +11,12 @@ body {
   padding: 0 16px 32px;
 }
 
+.loading {
+  padding: 24px 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* 顶部：连接状态 + 连接/保存操作；滚动时保持可见，任何页签下都能操作 */
 header {
   position: sticky;
   top: 0;
@@ -29,6 +35,15 @@ header {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .dot {
@@ -37,18 +52,32 @@ header {
   border-radius: 50%;
   background: var(--vscode-descriptionForeground);
   display: inline-block;
+  flex: none;
 }
 
 .dot.online { background: var(--vscode-testing-iconPassed, #3fb950); }
-.dot.connecting { background: var(--vscode-editorWarning-foreground, #d29922); }
-.dot.offline { background: var(--vscode-editorError-foreground, #f85149); }
 .dot.stopped { background: var(--vscode-descriptionForeground); }
+.dot.offline { background: var(--vscode-editorError-foreground, #f85149); }
+.dot.connecting {
+  background: var(--vscode-editorWarning-foreground, #d29922);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.grow {
+  flex: 1;
+}
 
 nav {
   display: flex;
   gap: 4px;
   margin: 12px 0;
   border-bottom: 1px solid var(--vscode-panel-border);
+  flex-wrap: wrap;
 }
 
 nav button {
@@ -80,17 +109,29 @@ button:hover {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 button.primary {
   color: var(--vscode-button-foreground);
   background: var(--vscode-button-background);
 }
 
-button.primary:hover {
+button.primary:hover:not(:disabled) {
   background: var(--vscode-button-hoverBackground);
 }
 
 button.danger {
   color: var(--vscode-errorForeground);
+}
+
+/* 已进入两步确认的按钮：整块染成危险色，避免"再点一次"被忽略 */
+button.armed {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-inputValidation-errorBorder, #f85149);
+  outline: 1px solid var(--vscode-errorForeground);
 }
 
 button.small {
@@ -111,9 +152,13 @@ input:not([type]) {
   box-sizing: border-box;
 }
 
+input[type="checkbox"] {
+  width: auto;
+}
+
 h2 {
   font-size: 1.05em;
-  margin: 18px 0 8px;
+  margin: 0;
 }
 
 label {
@@ -125,6 +170,26 @@ label.row {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 输入框 + 按钮排成一行（房间改名 / 创建房间等） */
+.row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.row-wrap label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  flex: 1 1 220px;
+}
+
+.row-wrap input {
+  flex: 1 1 auto;
 }
 
 .grid {
@@ -149,6 +214,15 @@ label.row {
   border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
   background: var(--vscode-inputValidation-warningBackground, rgba(210, 153, 34, 0.15));
   border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.banner.dirty {
+  border-left-color: var(--vscode-focusBorder);
+  background: var(--vscode-textBlockQuote-background);
 }
 
 code {
@@ -157,10 +231,68 @@ code {
   border-radius: 2px;
 }
 
-.section-head {
+/* 区块卡片 */
+.card {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin: 12px 0;
+}
+
+.card-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* 连接状态：一行状态 + 键值表 */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 2px 16px;
+  margin: 6px 0;
+}
+
+.kv > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kv .k {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+}
+
+.kv .v {
+  font-family: var(--vscode-editor-font-family, monospace);
+  word-break: break-all;
+}
+
+/* 空状态：说明 + 一个明确的下一步按钮 */
+.empty {
+  border: 1px dashed var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 14px;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.empty p {
+  margin: 0;
 }
 
 .peer {
@@ -183,7 +315,8 @@ code {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
 }
 
 .msg {
@@ -247,26 +380,18 @@ details summary {
 
 /* 房间卡片：沿用 .peer 的视觉语言，管理区默认折叠 */
 .room {
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 4px;
-  padding: 8px 12px;
-  margin: 8px 0;
+  padding: 10px 14px;
 }
 
-.room .peer-head {
-  flex-wrap: wrap;
-}
-
-.room-manage {
-  margin-top: 6px;
-  padding-top: 6px;
+.manage {
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px dashed var(--vscode-panel-border);
 }
 
 .chip {
   display: inline-block;
   padding: 1px 8px;
-  margin: 2px 2px 2px 0;
   border-radius: 10px;
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
@@ -275,4 +400,22 @@ details summary {
 
 .chip.me {
   outline: 1px solid var(--vscode-focusBorder);
+}
+
+/* 成员 / 房间标签：一个成员连同它的操作按钮作为整体换行 */
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+
+.member {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 12px;
+  background: var(--vscode-editorWidget-background, transparent);
 }

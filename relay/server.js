@@ -39,7 +39,7 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 /** 中继版本：必须与仓库 package.json 的 version 同步（发版时一起改；install.sh 会比对 /healthz 告警） */
-const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '0.4.1';
+const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '0.4.2';
 /** 协议号：与扩展 src/protocol.ts 的 PROTOCOL_VERSION 对应，仅供探针展示 */
 const PROTOCOL = 2;
 /** 管理令牌：为空时管理功能整体不可用（不给任何人管理权限） */
