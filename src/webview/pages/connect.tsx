@@ -17,7 +17,9 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
   const status = state.status;
   const relay = state.relayInfo;
   const mine = state.extensionVersion;
-  const mismatch = Boolean(relay.version && mine && relay.version !== mine);
+  // 与中继侧的门禁口径一致：忽略 -testN 后缀，测试包与正式包视为同一版本
+  const norm = (v: string): string => v.replace(/-test\d+$/i, '');
+  const mismatch = Boolean(relay.version && mine && norm(relay.version) !== norm(mine));
   const myId = state.effectiveIdentity.id || '';
   const missing = state.identityMissing;
   const hasWorkspace = Boolean(state.workspaceLabel);

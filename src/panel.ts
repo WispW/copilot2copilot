@@ -50,8 +50,11 @@ export class ConsolePanel {
     const panel = vscode.window.createWebviewPanel('talk2copilot.console', 'Copilot2Copilot', vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      // 界面脚本在 dist/（构建产物）、样式在 media/，都在扩展根目录下
-      localResourceRoots: [this.context.extensionUri],
+      // 只放开实际被加载的两个目录：脚本在 dist/（构建产物）、样式在 media/
+      localResourceRoots: [
+        vscode.Uri.joinPath(this.context.extensionUri, 'dist'),
+        vscode.Uri.joinPath(this.context.extensionUri, 'media'),
+      ],
     });
     log('[panel] 打开配置页面');
     this.attach(panel);

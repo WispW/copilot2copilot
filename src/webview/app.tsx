@@ -35,7 +35,11 @@ export function App() {
 
   const goto = (next: TabId): void => {
     setTab(next);
-    // 可见性与封禁变化只发生在服务端，切页时顺手拉一次最新状态
+    // 可见性与封禁变化只发生在服务端，已连接时切页顺手拉一次最新状态；
+    // 未连接时跳过，否则只会弹出「请先连接」这类无用的警告
+    if (snap.state?.status.state !== 'online') {
+      return;
+    }
     if (next === 'rooms') {
       post({ type: 'refreshRooms' });
     }

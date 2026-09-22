@@ -102,7 +102,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     transportDisposables.forEach(d => d.dispose());
     transportDisposables = [];
     await currentTransport?.stop();
-    currentTransport = undefined;
+    // 保留实例（不置空）：断开前入队、且已告知模型"待其上线后自动重发"的消息留在它的
+    // 待发队列里，下次「连接」复用同一实例时补发；断开期间新消息也照此入队
     status = { state: 'stopped', detail: '已手动断开（点「连接」恢复）' };
     statusBar.update(status);
     panel.postState();
@@ -115,7 +116,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     disconnect,
     control: (kind, op, payload) => currentTransport
       ? currentTransport.controlOp(kind, op, payload)
-      : Promise.resolve({ ok: false, error: '通信通道未启动，请点击「保存并应用」后重试' }),
+      : Promise.resolve({ ok: false, error: '尚未连接中继，请在上方点「连接」后再试' }),
     refreshAdmin,
   });
 

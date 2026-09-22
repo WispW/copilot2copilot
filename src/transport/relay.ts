@@ -224,12 +224,15 @@ export class RelayTransport implements Transport {
       logError('[relay] 连接出错', err);
     });
     ws.on('close', (code, reason) => {
+      // 已被 stop() 或下一次连接替换：属上一个会话，不能改写当前会话的状态与在途请求
+      if (this.ws !== ws) {
+        log(`[relay] 忽略上一个会话的关闭事件（code=${code}）`);
+        return;
+      }
+      this.ws = undefined;
       const reasonText = reason.toString();
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reasonText || '(空)'}`);
       this.failPending('与中继的连接已断开');
-      if (this.ws === ws) {
-        this.ws = undefined;
-      }
       if (!this.running) {
         return;
       }
