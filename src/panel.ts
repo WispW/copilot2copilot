@@ -1,36 +1,17 @@
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
-import { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
-import { AppConfig, ColleagueConfig, HistoryItem, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store, WorkspaceIdentity } from './store';
+import { PanelState } from './panelTypes';
+import { ColleagueProfile, RoomSummary } from './protocol';
+import { AppConfig, ColleagueConfig, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
 import { ControlResult, TransportStatus } from './transport/types';
-
-interface PanelState {
-  /** 全局配置；其中 identity 为“模板档案”，只用于给新工作区预填角色与负责内容 */
-  config: AppConfig;
-  /** 当前生效档案（恒为工作区档案） */
-  effectiveIdentity: ColleagueProfile;
-  /** 当前工作区的档案 */
-  workspaceIdentity: WorkspaceIdentity;
-  /** 当前工作区名（无工作区时为空串） */
-  workspaceLabel: string;
-  status: TransportStatus;
-  messages: HistoryItem[];
-  onlineIds: string[];
-  identityMissing: string[];
-  /** 房间列表（中继下发）：可见域，未加入房间时看不到其他设备 */
-  rooms: RoomSummary[];
-  /** 管理员面板：令牌是否已设置、是否验证通过、在线设备与封禁名单 */
-  admin: { tokenSet: boolean; verified: boolean; devices: AdminDevice[]; bans: string[] };
-  /** 中继运行版本与协议号（连接成功后获取，供版本对照） */
-  relayInfo: { version: string; protocol: number };
-  /** 本扩展版本（版本门禁要求与中继一致） */
-  extensionVersion: string;
-}
 
 interface PanelDeps {
   getStatus(): TransportStatus;
   getOnlineIds(): string[];
+  /** 重新连接：保存并应用，以及界面上的「连接 / 重试连接」都走这里 */
   restart(): Promise<void>;
+  /** 手动断开：停止通道，之后不再自动重连 */
+  disconnect(): Promise<void>;
   control(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
   refreshAdmin(): Promise<void>;
 }
@@ -69,7 +50,8 @@ export class ConsolePanel {
     const panel = vscode.window.createWebviewPanel('talk2copilot.console', 'Copilot2Copilot', vscode.ViewColumn.Active, {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')],
+      // 界面脚本在 dist/（构建产物）、样式在 media/，都在扩展根目录下
+      localResourceRoots: [this.context.extensionUri],
     });
     log('[panel] 打开配置页面');
     this.attach(panel);
@@ -78,7 +60,7 @@ export class ConsolePanel {
 
   private attach(panel: vscode.WebviewPanel): void {
     this.panel = panel;
-    panel.webview.html = this.renderHtml(panel.webview, vscode.Uri.joinPath(this.context.extensionUri, 'media'));
+    panel.webview.html = this.renderHtml(panel.webview, this.context.extensionUri);
     panel.webview.onDidReceiveMessage(msg => void this.handleMessage(msg), undefined, this.context.subscriptions);
     panel.onDidDispose(() => {
       if (this.panel === panel) {
@@ -120,6 +102,7 @@ export class ConsolePanel {
       admin: { tokenSet: this.store.hasAdminToken(), ...this.store.getAdminState() },
       relayInfo: this.store.getRelayInfo(),
       extensionVersion: this.store.extensionVersion,
+      loopGuard: { windowMs: LOOP_WINDOW_MS, limit: LOOP_MESSAGE_LIMIT },
     };
   }
 
@@ -139,19 +122,35 @@ export class ConsolePanel {
       case 'ready':
         this.postState();
         break;
+      case 'connect':
+        log('[panel] 界面请求连接中继');
+        await this.deps.restart();
+        this.postState();
+        break;
+      case 'disconnect':
+        log('[panel] 界面请求断开中继');
+        await this.deps.disconnect();
+        this.postState();
+        break;
       case 'save': {
         log(`[panel] 保存配置：同事数=${m.config?.colleagues?.length ?? '?'}`);
         if (m.config) {
-          // 对方档案（role/scope）以 store 中已同步的值为准，避免界面旧快照把它覆盖成空
+          // 以 store 现有列表为基：快照里没有的条目（保存瞬间刚被中继发现的同事）必须保留，
+          // 否则这次保存会把它从配置里删掉；role/scope 一律以 store 的同步值为准，
+          // 避免界面旧快照把它们覆盖成空
+          const byId = new Map((m.config.colleagues as ColleagueConfig[]).map(raw => [raw.id, raw]));
           const merged: AppConfig = {
             ...m.config,
-            colleagues: (m.config.colleagues as ColleagueConfig[]).map(raw => {
-              const current = this.store.config.colleagues.find(x => x.id === raw.id);
+            colleagues: this.store.config.colleagues.map(current => {
+              const raw = byId.get(current.id);
+              if (!raw) {
+                return current;
+              }
               return {
-                id: raw.id,
-                role: current?.role ?? raw.role,
-                scope: current?.scope ?? raw.scope,
-                relayPeerId: raw.relayPeerId ?? current?.relayPeerId ?? '',
+                id: current.id,
+                role: current.role,
+                scope: current.scope,
+                relayPeerId: raw.relayPeerId ?? current.relayPeerId,
                 enabled: raw.enabled !== false,
               };
             }),
@@ -226,9 +225,9 @@ export class ConsolePanel {
           if (op === 'ban') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已封禁 ${target}（它已断开且无法接入），可在「管理 → 封禁名单」解除`);
           } else if (op === 'unban') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${target} 的封禁，对方会在 60 秒内自动重连`);
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${target} 的封禁，对方可点「重试连接」重新接入（不会自动重连）`);
           } else if (op === 'kick') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${target} 移出中继（60 秒后它会自动重试）`);
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${target} 移出中继，对方需手动点「重试连接」才能恢复（不会自动重连）`);
           }
         }
         await this.deps.refreshAdmin();
@@ -294,9 +293,10 @@ export class ConsolePanel {
     }
   }
 
-  private renderHtml(webview: vscode.Webview, mediaRoot: vscode.Uri): string {
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.js'));
-    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.css'));
+  private renderHtml(webview: vscode.Webview, root: vscode.Uri): string {
+    // 界面脚本是构建产物（src/webview/ → dist/webview.js），样式仍是手写文件
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(root, 'dist', 'webview.js'));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(root, 'media', 'main.css'));
     const nonce = Array.from({ length: 32 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -308,101 +308,7 @@ export class ConsolePanel {
 <title>Copilot2Copilot</title>
 </head>
 <body>
-<header>
-  <div class="status-row">
-    <span id="status-dot" class="dot"></span>
-    <span id="status-text">加载中…</span>
-  </div>
-  <div class="actions">
-    <button id="btn-logs">查看日志</button>
-    <button id="btn-reload" title="放弃未保存的修改，恢复为当前生效配置">重新载入</button>
-    <button id="btn-save" class="primary">保存并应用</button>
-  </div>
-</header>
-<nav id="tabs">
-  <button data-tab="conn" class="active">连接</button>
-  <button data-tab="peers">Copilot 列表</button>
-  <button data-tab="rooms">房间</button>
-  <button data-tab="admin">管理</button>
-  <button data-tab="inbox">收件箱</button>
-  <button data-tab="behavior">行为</button>
-</nav>
-<main>
-  <section id="tab-conn">
-    <h2>中继服务器</h2>
-    <div id="relay-fields">
-      <label>中继地址 <input id="relay-url" placeholder="wss://relay.example.com"></label>
-      <label>中继令牌（可选） <input id="token" type="password" placeholder="留空表示保持不变"></label>
-      <label>中继管理令牌（可选） <input id="admin-token" type="password" placeholder="留空表示保持不变"></label>
-      <p class="hint">令牌保存在系统密钥库（SecretStorage）。管理令牌用于获得中继管理权限（查看/踢出/封禁在线设备，并对所有房间拥有所有者权限）；中继未配置管理令牌时该功能不可用。</p>
-      <p class="hint" id="relay-version"></p>
-      <p class="hint">中继 id 即下面的「档案 id」，本机每个窗口各用各的档案，因此不会互相顶下线。</p>
-    </div>
-    <h2>本工作区档案（对方在其 Copilot 中可见）</h2>
-    <p class="hint">当前工作区：<code id="ws-label"></code>。档案按工作区保存，本机多个窗口因此可以各有各的 id。</p>
-    <div id="identity-warning" class="banner" hidden></div>
-    <div class="grid">
-      <label>id <input id="id-id" placeholder="唯一标识，双方约定一致"></label>
-      <label>角色 <input id="id-role" placeholder="如：后端工程师"></label>
-      <label>负责内容 <input id="id-scope" placeholder="如：订单服务、支付网关"></label>
-    </div>
-    <p class="hint" id="identity-hint"></p>
-    <p class="hint">请把上面的 id 告诉同事——双方的档案会经中继互相同步，无需手工登记。</p>
-  </section>
-  <section id="tab-peers" hidden>
-    <div class="section-head">
-      <h2>Copilot 列表</h2>
-    </div>
-    <p class="hint">列表由中继自动维护：只显示在线的 Copilot（对方下线后条目会自动消失），角色与负责内容由中继下发；不需要手工添加或编辑。</p>
-    <div id="peers"></div>
-  </section>
-  <section id="tab-rooms" hidden>
-    <div class="section-head">
-      <h2>房间</h2>
-      <button id="btn-refresh-rooms">刷新</button>
-    </div>
-    <p class="hint">房间决定「谁能看到谁」：设备只能看到、并只能与同房间成员通信；<strong>未加入任何房间时与所有人互相不可见</strong>。创建房间后把密码告诉同事，对方加入即可互通。房间由创建者（所有者）管理：改密码、移出成员（移出后无法再凭密码加入，需所有者或管理员解除）、解散。</p>
-    <div id="room-create">
-      <label>新房间名 <input id="room-name" placeholder="如：订单服务组" maxlength="32"></label>
-      <label>加入密码（可选） <input id="room-password" type="password" placeholder="留空表示无需密码"></label>
-      <button id="btn-create-room" class="primary">创建房间</button>
-    </div>
-    <div id="rooms"></div>
-  </section>
-  <section id="tab-admin" hidden>
-    <div class="section-head">
-      <h2>管理</h2>
-      <button id="btn-refresh-admin">刷新</button>
-    </div>
-    <p class="hint" id="admin-hint"></p>
-    <h2>在线设备</h2>
-    <p class="hint">每行列出该设备所在的房间，点房间后面的「移出」可把它从<strong>那个房间</strong>踢出（两步确认：再点一次「确认移出」）；「踢出中继 / 封禁」则是设备级操作。</p>
-    <div id="admin-devices"></div>
-    <h2>房间移出名单</h2>
-    <p class="hint">被移出房间的成员无法再凭密码加入，只能在这里由管理员（或房间所有者）解除；这与下面的「中继封禁」是两回事。</p>
-    <div id="admin-room-blocks"></div>
-    <h2>中继封禁名单</h2>
-    <p class="hint">封禁的设备会被断开且无法接入，因此会从上面的在线列表消失，但仍列在这里；点「解除封禁」后对方会在 60 秒内自动重连。房间成员的封禁状态也会在该房间的成员列表里标注。</p>
-    <div id="admin-bans"></div>
-  </section>
-  <section id="tab-inbox" hidden>
-    <div class="section-head"><h2>收件箱</h2><button id="btn-open-files">打开收件目录</button></div>
-    <p class="hint">同事发来的文件保存在扩展私有目录（不进入工作区），点上面的按钮可在文件管理器中打开。</p>
-    <div id="inbox"></div>
-  </section>
-  <section id="tab-behavior" hidden>
-    <h2>收发行为</h2>
-    <p class="hint">收到同事的消息或回复时，会直接触发本机 Copilot 对话进行处理（不再弹出通知）。</p>
-    <label>等待回复默认超时（秒） <input id="wait-timeout" type="number" min="5" max="180"></label>
-    <label>历史消息保留条数 <input id="history-limit" type="number" min="20" max="1000"></label>
-    <div class="section-head"><h2>维护</h2></div>
-    <button id="btn-save-template">把当前角色/负责内容存为模板</button>
-    <p class="hint">模板用于给以后新开的工作区预填角色与负责内容（<strong>不含 id</strong>，避免新窗口与现有窗口撞名）。</p>
-    <button id="btn-reset-loop">重置熔断计数</button>
-    <p class="hint">与同一位同事在 ${LOOP_WINDOW_MS / 60000} 分钟内的往来达到 ${LOOP_MESSAGE_LIMIT} 条时会自动中止（防止两端无限对话）。点此立即重新计数；窗口随时间滑动，稍后也会自动恢复。</p>
-    <button id="btn-clear-history" class="danger">清空消息历史</button>
-  </section>
-</main>
+<div id="app"></div>
 <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

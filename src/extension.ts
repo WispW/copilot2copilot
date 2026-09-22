@@ -57,9 +57,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     transportDisposables.forEach(d => d.dispose());
     transportDisposables = [];
     await currentTransport?.stop();
-    currentTransport = undefined;
 
-    const transport: Transport = new RelayTransport(store);
+    // 复用同一个传输实例：断开期间入队的未发消息保存在它的队列里，重连后补发；
+    // 每次重建实例会让队列连同旧实例一起被丢弃（消息静默消失）
+    const transport: Transport = currentTransport instanceof RelayTransport
+      ? currentTransport
+      : new RelayTransport(store);
     currentTransport = transport;
     transportDisposables.push(
       transport.onMessage(env => {
@@ -93,10 +96,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   };
 
+  /** 手动断开：停止通道并停在「已断开」，之后不再自动重连（点界面上的「连接」恢复） */
+  const disconnect = async (): Promise<void> => {
+    log('手动断开中继通道');
+    transportDisposables.forEach(d => d.dispose());
+    transportDisposables = [];
+    await currentTransport?.stop();
+    currentTransport = undefined;
+    status = { state: 'stopped', detail: '已手动断开（点「连接」恢复）' };
+    statusBar.update(status);
+    panel.postState();
+  };
+
   const panel = new ConsolePanel(context, store, {
     getStatus: () => status,
     getOnlineIds,
     restart,
+    disconnect,
     control: (kind, op, payload) => currentTransport
       ? currentTransport.controlOp(kind, op, payload)
       : Promise.resolve({ ok: false, error: '通信通道未启动，请点击「保存并应用」后重试' }),
@@ -113,6 +129,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await restart();
       void vscode.window.showInformationMessage(`Copilot2Copilot：${status.detail}`);
     }),
+    vscode.commands.registerCommand('talk2copilot.disconnect', async () => {
+      await disconnect();
+      void vscode.window.showInformationMessage('Copilot2Copilot：已断开中继连接（可在配置界面点「连接」恢复）。');
+    }),
     store.onDidChange(() => statusBar.update(status)),
     new vscode.Disposable(() => {
       void currentTransport?.stop();
@@ -120,8 +140,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  await restart();
-  statusBar.update(status);
+  // 自动连接只做一次：失败即停在离线态，由用户点「连接」重试（不做任何后台重连）
+  if (store.config.relay.autoConnect === false) {
+    log('配置为启动时不自动连接，等待用户手动连接');
+    status = { state: 'stopped', detail: '未自动连接（点「连接」开始）' };
+    statusBar.update(status);
+  } else {
+    await restart();
+    statusBar.update(status);
+  }
 
   if (!context.globalState.get('talk2copilot.consoleShown')) {
     await context.globalState.update('talk2copilot.consoleShown', true);

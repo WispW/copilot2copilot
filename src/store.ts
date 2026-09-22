@@ -25,7 +25,8 @@ export function colleagueEnabled(c: ColleagueConfig | undefined): boolean {
 export interface AppConfig {
   /** 模板档案：只用于给新工作区档案预填角色与负责内容，不参与通信身份 */
   identity: ColleagueProfile;
-  relay: { url: string };
+  /** autoConnect：扩展启动时是否自动连接一次；关掉则停在未连接态，等用户点「连接」 */
+  relay: { url: string; autoConnect: boolean };
   behavior: { waitTimeoutSec: number; historyLimit: number };
   colleagues: ColleagueConfig[];
 }
@@ -59,7 +60,7 @@ function defaultConfig(): AppConfig {
   const user = os.userInfo().username || 'me';
   return {
     identity: { id: user, role: '', scope: '' },
-    relay: { url: '' },
+    relay: { url: '', autoConnect: true },
     behavior: { waitTimeoutSec: 90, historyLimit: 200 },
     colleagues: [],
   };
@@ -74,7 +75,7 @@ function normalize(raw: Partial<AppConfig>): AppConfig {
       role: raw.identity?.role ?? '',
       scope: raw.identity?.scope ?? '',
     },
-    relay: { url: raw.relay?.url ?? '' },
+    relay: { url: raw.relay?.url ?? '', autoConnect: raw.relay?.autoConnect !== false },
     behavior: { ...base.behavior, ...(raw.behavior ?? {}) },
     colleagues: Array.isArray(raw.colleagues)
       ? raw.colleagues.map(c => ({
