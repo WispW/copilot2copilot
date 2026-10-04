@@ -75,6 +75,7 @@ export function RoomsPage({ snap }: { snap: Snapshot }) {
         <div class="card-head">
           <h2>{room.name}</h2>
           <span class="hint">成员 {room.memberCount}</span>
+          {(room.memoryCount ?? 0) > 0 && <span class="hint">记忆 {room.memoryCount} 条</span>}
           {room.hasPassword && <span class="hint">有密码</span>}
           {room.joined && <span class="hint">已加入</span>}
           {room.createdBy && <span class="hint">创建者 {room.createdBy}</span>}

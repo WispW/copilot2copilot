@@ -1,4 +1,4 @@
-import type { PanelStateMessage, WebviewMessage } from '../panelTypes';
+import type { PanelMemoryMessage, PanelStateMessage, WebviewMessage } from '../panelTypes';
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
@@ -20,6 +20,18 @@ export function onPanelState(handler: (msg: PanelStateMessage) => void): () => v
   const listener = (event: MessageEvent): void => {
     const data = event.data as PanelStateMessage | undefined;
     if (data && data.type === 'state') {
+      handler(data);
+    }
+  };
+  window.addEventListener('message', listener);
+  return () => window.removeEventListener('message', listener);
+}
+
+/** 订阅扩展推送的记忆数据（面板请求 / 增删改后刷新） */
+export function onMemoryState(handler: (msg: PanelMemoryMessage) => void): () => void {
+  const listener = (event: MessageEvent): void => {
+    const data = event.data as PanelMemoryMessage | undefined;
+    if (data && data.type === 'memoryState') {
       handler(data);
     }
   };

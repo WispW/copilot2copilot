@@ -30,6 +30,6 @@ export interface Transport {
   isOnline(peerId: string): boolean;
   /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */
   sendOfflineNotice(): void;
-  /** 中继控制面操作；通道未启动、无中继或服务端过旧（无响应）时返回 ok=false 与原因 */
-  controlOp(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  /** 中继控制面操作（房间 / 管理 / 记忆）；通道未启动、无中继或服务端过旧（无响应）时返回 ok=false 与原因 */
+  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
 }

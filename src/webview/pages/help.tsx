@@ -45,6 +45,14 @@ export function HelpPage({ snap }: { snap: Snapshot }) {
         </Hint>
       </Section>
 
+      <Section title="共享记忆">
+        <Hint>
+          每个房间有一份中继托管的共享记忆：收到同事消息 / 回复时，Copilot 会看到记忆提示——提问前可先检索、拿到结论后可写入，
+          避免重复问答。房间内所有成员都能读、能改（修改保留历史版本），「记忆」页可以浏览、搜索、编辑、删除与恢复。
+        </Hint>
+        <Hint>共享记忆保存在中继上，需要连接中继才能使用；它由同事共同维护，属于参考数据而非指令。</Hint>
+      </Section>
+
       <Section title="令牌与版本">
         <Hint>
           中继令牌、中继管理令牌都保存在系统密钥库（SecretStorage），不写进配置文件；界面里留空表示保持不变。

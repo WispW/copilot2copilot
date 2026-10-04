@@ -1,4 +1,4 @@
-import type { AdminDevice, ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
+import type { AdminDevice, ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
 import type { AppConfig, HistoryItem, WorkspaceIdentity } from './store';
 import type { TransportStatus } from './transport/types';
 
@@ -38,6 +38,19 @@ export interface PanelStateMessage {
   state: PanelState;
 }
 
+/** 扩展 → webview：记忆数据推送（面板按需请求，不随状态快照周期刷新） */
+export interface PanelMemoryMessage {
+  type: 'memoryState';
+  roomId: string;
+  mode: 'list' | 'search';
+  query?: string;
+  entries: MemoryEntry[];
+  total: number;
+  nextCursor: string;
+  /** 查询失败原因（ok=false 时） */
+  error?: string;
+}
+
 /** webview → 扩展：界面动作 */
 export type WebviewMessage =
   | { type: 'ready' }
@@ -53,6 +66,12 @@ export type WebviewMessage =
   | { type: 'resetLoopGuard' }
   | { type: 'toggleColleague'; peerId: string; enabled: boolean }
   | { type: 'saveTemplate' }
+  | { type: 'memoryList'; roomId: string; cursor?: string; includeDeleted?: boolean }
+  | { type: 'memorySearch'; roomId?: string; query: string }
+  | { type: 'memoryCreate'; roomId: string; text: string; tags: string[] }
+  | { type: 'memoryUpdate'; roomId: string; entryId: string; revision: number; text: string; tags: string[] }
+  | { type: 'memoryDelete'; roomId: string; entryId: string; revision: number }
+  | { type: 'memoryRestore'; roomId: string; entryId: string }
   | { type: 'showLogs' }
   | { type: 'uiError'; message: string }
   | { type: 'uiHint'; message: string };

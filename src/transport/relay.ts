@@ -268,8 +268,8 @@ export class RelayTransport implements Transport {
     if (!isEnvelope(parsed)) {
       return;
     }
-    // 控制面：房间 / 管理应答按请求 id 关联；两类都不进消息通道
-    if (parsed.kind === 'room' || parsed.kind === 'admin') {
+    // 控制面：房间 / 管理 / 记忆应答按请求 id 关联；都不进消息通道
+    if (parsed.kind === 'room' || parsed.kind === 'admin' || parsed.kind === 'memory') {
       const resolve = this.pending.get(parsed.id);
       if (resolve) {
         this.pending.delete(parsed.id);

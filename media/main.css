@@ -156,6 +156,18 @@ input[type="checkbox"] {
   width: auto;
 }
 
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 4px 6px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 select {
   font-family: inherit;
   font-size: inherit;
@@ -175,6 +187,11 @@ select {
   font-size: 0.95em;
   color: var(--vscode-descriptionForeground);
   margin: 18px 0 4px;
+}
+
+/* 回收站里的记忆条目置灰 */
+.deleted-entry {
+  opacity: 0.6;
 }
 
 h2 {

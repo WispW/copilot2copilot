@@ -4,10 +4,10 @@
  */
 
 /**
- * 协议版本：v3 把房间改为「中继管理员统一维护 + 落盘」——房间列表全员可见、凭密码加入、
- * 分类仅用于分组排序；中继按扩展版本号做接入门禁（本文件改动时需同步 relay/server.js）
+ * 协议版本：v4 新增房间共享记忆（成员 query/remember/update/delete/restore，管理员 memory-*）；
+ * v3 起房间由中继管理员统一维护并落盘。中继按扩展版本号做接入门禁（本文件改动时需同步 relay/server.js）
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** 文件通道：单个文件大小上限与分块大小（512 KiB 经 base64 约 683 KiB，低于中继 2 MiB 的单帧上限） */
 export const FILE_MAX_BYTES = 64 * 1024 * 1024;
@@ -42,6 +42,8 @@ export interface RoomSummary {
   createdBy: string;
   hasPassword: boolean;
   memberCount: number;
+  /** 房间内未删除的共享记忆条数（中继下发，用于界面提示） */
+  memoryCount: number;
   /** 请求者是否已在该房间中 */
   joined: boolean;
   members?: string[];
@@ -59,6 +61,37 @@ export interface RoomCategory {
   createdAt: number;
 }
 
+/** 记忆条目（中继 memory 操作返回；history 仅在 get 时下发） */
+export interface MemoryEntry {
+  id: string;
+  roomId: string;
+  roomName: string;
+  text: string;
+  tags: string[];
+  author: string;
+  createdAt: number;
+  revision: number;
+  updatedBy: string;
+  updatedAt: number;
+  /** 来源消息 / 文件编号（可选） */
+  sourceRequestId?: string;
+  /** 软删除标记 */
+  deleted?: { by: string; at: number };
+  /** 历史版本（get 时下发）：最近 10 版，不含当前版 */
+  history?: MemoryHistoryVersion[];
+  /** 检索分（仅 query 返回） */
+  score?: number;
+}
+
+/** 记忆历史版本 */
+export interface MemoryHistoryVersion {
+  revision: number;
+  by: string;
+  at: number;
+  text: string;
+  tags: string[];
+}
+
 /** 管理员视角的在线设备（仅 admin.list 下发） */
 export interface AdminDevice {
   id: string;
@@ -71,7 +104,7 @@ export interface AdminDevice {
 
 export type MessageKind = 'hello' | 'message' | 'reply' | 'presence' | 'offline'
   | 'file-offer' | 'file-chunk' | 'file-ack' | 'file-end' | 'file-done'
-  | 'room' | 'admin' | 'room-event' | 'error';
+  | 'room' | 'admin' | 'room-event' | 'memory' | 'error';
 
 export interface MessageEnvelope {
   v: number;
@@ -151,5 +184,5 @@ export function isEnvelope(value: unknown): value is MessageEnvelope {
   return typeof e.id === 'string' && typeof e.from === 'string' && typeof e.to === 'string'
     && (e.kind === 'hello' || e.kind === 'message' || e.kind === 'reply' || e.kind === 'presence' || e.kind === 'offline'
       || e.kind === 'file-offer' || e.kind === 'file-chunk' || e.kind === 'file-ack' || e.kind === 'file-end' || e.kind === 'file-done'
-      || e.kind === 'room' || e.kind === 'admin' || e.kind === 'room-event' || e.kind === 'error');
+      || e.kind === 'room' || e.kind === 'admin' || e.kind === 'room-event' || e.kind === 'memory' || e.kind === 'error');
 }

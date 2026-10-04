@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
 import { PanelState } from './panelTypes';
-import { ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
+import { ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
 import { AppConfig, ColleagueConfig, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
 import { ControlResult, TransportStatus } from './transport/types';
 
@@ -12,7 +12,7 @@ interface PanelDeps {
   restart(): Promise<void>;
   /** 手动断开：停止通道，之后不再自动重连 */
   disconnect(): Promise<void>;
-  control(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  control(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
   refreshAdmin(): Promise<void>;
 }
 
@@ -110,6 +110,47 @@ export class ConsolePanel {
     };
   }
 
+  /** 拉取记忆列表并推送给界面（打开面板 / 增删改后刷新都走这里） */
+  private async pushMemoryList(roomId: string, cursor?: string, includeDeleted = false): Promise<void> {
+    const result = await this.deps.control('memory', 'list', {
+      roomId,
+      limit: 50,
+      ...(cursor ? { cursor } : {}),
+      ...(includeDeleted ? { includeDeleted: true } : {}),
+    });
+    this.sendMemoryState(roomId, 'list', result);
+  }
+
+  /** 记忆检索：roomId 为空时检索我加入的全部房间 */
+  private async pushMemorySearch(roomId: string, query: string): Promise<void> {
+    const result = await this.deps.control('memory', 'query', {
+      query,
+      topK: 50,
+      ...(roomId ? { roomId } : {}),
+    });
+    this.sendMemoryState(roomId, 'search', result, query);
+  }
+
+  private sendMemoryState(roomId: string, mode: 'list' | 'search', result: ControlResult, query?: string): void {
+    const payload = (result.env?.payload ?? {}) as {
+      entries?: MemoryEntry[];
+      results?: MemoryEntry[];
+      total?: number;
+      nextCursor?: string;
+    };
+    const entries = mode === 'search' ? (payload.results ?? []) : (payload.entries ?? []);
+    void this.panel?.webview.postMessage({
+      type: 'memoryState',
+      roomId,
+      mode,
+      ...(query !== undefined ? { query } : {}),
+      entries,
+      total: mode === 'search' ? entries.length : (payload.total ?? entries.length),
+      nextCursor: mode === 'search' ? '' : (payload.nextCursor ?? ''),
+      ...(result.ok ? {} : { error: result.error ?? '记忆查询失败' }),
+    });
+  }
+
   private async handleMessage(msg: unknown): Promise<void> {
     const m = msg as {
       type?: string;
@@ -121,6 +162,14 @@ export class ConsolePanel {
       identity?: ColleagueProfile;
       op?: string;
       payload?: Record<string, unknown>;
+      roomId?: string;
+      cursor?: string;
+      includeDeleted?: boolean;
+      query?: string;
+      text?: string;
+      tags?: string[];
+      entryId?: string;
+      revision?: number;
     };
     switch (m.type) {
       case 'ready':
@@ -297,6 +346,84 @@ export class ConsolePanel {
         log('[panel] 已把当前档案的角色/负责内容存为模板');
         void vscode.window.showInformationMessage('Copilot2Copilot：已把当前角色与负责内容存为模板，供新工作区预填（不含 id）。');
         this.postState();
+        break;
+      }
+      case 'memoryList': {
+        const roomId = String(m.roomId ?? '');
+        if (roomId) {
+          await this.pushMemoryList(roomId, m.cursor, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'memorySearch': {
+        const query = String(m.query ?? '').trim();
+        if (query) {
+          await this.pushMemorySearch(String(m.roomId ?? ''), query);
+        }
+        break;
+      }
+      case 'memoryCreate': {
+        const roomId = String(m.roomId ?? '');
+        const text = String(m.text ?? '').trim();
+        if (roomId && text) {
+          log(`[panel] 写入共享记忆（房间 ${roomId}，${text.length} 字符）`);
+          const result = await this.deps.control('memory', 'remember', {
+            roomId,
+            text,
+            tags: Array.isArray(m.tags) ? m.tags : [],
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '写入记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId);
+        }
+        break;
+      }
+      case 'memoryUpdate': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 更新共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'update', {
+            entryId,
+            revision: Number(m.revision),
+            text: String(m.text ?? ''),
+            tags: Array.isArray(m.tags) ? m.tags : [],
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '更新记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId);
+        }
+        break;
+      }
+      case 'memoryDelete': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 删除共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'delete', {
+            entryId,
+            revision: Number(m.revision),
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '删除记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId);
+        }
+        break;
+      }
+      case 'memoryRestore': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 恢复共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'restore', { entryId });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '恢复记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId);
+        }
         break;
       }
       case 'uiError':

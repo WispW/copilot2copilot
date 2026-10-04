@@ -6,15 +6,17 @@ import { BehaviorPage } from './pages/behavior';
 import { ConnectPage } from './pages/connect';
 import { HelpPage } from './pages/help';
 import { InboxPage } from './pages/inbox';
+import { MemoryPage } from './pages/memory';
 import { PeersPage } from './pages/peers';
 import { RoomsPage } from './pages/rooms';
 
-export type TabId = 'conn' | 'peers' | 'rooms' | 'admin' | 'inbox' | 'behavior' | 'help';
+export type TabId = 'conn' | 'peers' | 'rooms' | 'memory' | 'admin' | 'inbox' | 'behavior' | 'help';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'conn', label: '连接' },
   { id: 'peers', label: 'Copilot 列表' },
   { id: 'rooms', label: '房间' },
+  { id: 'memory', label: '记忆' },
   { id: 'admin', label: '管理' },
   { id: 'inbox', label: '收件箱' },
   { id: 'behavior', label: '行为' },
@@ -126,6 +128,7 @@ export function App() {
         {tab === 'conn' && <ConnectPage snap={snap} />}
         {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
         {tab === 'rooms' && <RoomsPage snap={snap} />}
+        {tab === 'memory' && <MemoryPage snap={snap} />}
         {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
         {tab === 'inbox' && <InboxPage snap={snap} />}
         {tab === 'behavior' && <BehaviorPage snap={snap} />}

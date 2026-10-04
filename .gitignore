@@ -7,5 +7,6 @@ dist/
 # 中继前台调试时会写进 relay/ 的本地状态（正式部署走 systemd StateDirectory）
 relay/rooms.json*
 relay/bans.json*
+relay/memory.json*
 # 本地测试中继的令牌等环境变量（不入库）
 .test-relay.env
