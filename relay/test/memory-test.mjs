@@ -24,6 +24,7 @@ const ADMIN = 'a-memory';
 const CLIENT_VERSION = '2026.10.4-test1.1';
 const STATE_DIR = mkdtempSync(join(tmpdir(), 't2c-memory-'));
 const MEMORY_FILE = join(STATE_DIR, 'memory.json');
+const ROOMS_FILE = join(STATE_DIR, 'rooms.json');
 
 let passed = 0;
 const ok = label => {
@@ -343,6 +344,24 @@ try {
   assert.equal(survivorDetail.payload.entry.history.length, 1, '历史版本在重启后保持');
   assert.equal((await adm(alice2, 'memory-stats')).payload.rooms.some(room => room.id === cascadeRoomId), false, '级联房已不存在');
   ok('持久化：SIGKILL 重启后条目 / 历史保持；房间解散级联删除');
+
+  // ---------------- 房间状态损坏：孤儿记忆先另存备份再丢弃 ----------------
+  await stopRelay('SIGTERM');
+  writeFileSync(ROOMS_FILE, '{ 这不是合法 JSON');
+  startRelay();
+  health = await waitHealthy();
+  assert.equal(health.memories, 0, '房间缺失的孤儿记忆应从内存中丢弃');
+  const roomBadBackups = readdirSync(STATE_DIR).filter(name => name.startsWith('rooms.json.bad-'));
+  assert.equal(roomBadBackups.length, 1, 'rooms.json 损坏应生成 .bad-* 备份');
+  const orphanBackups = readdirSync(STATE_DIR).filter(name => name.startsWith('memory.json.orphaned-'));
+  assert.equal(orphanBackups.length, 1, '应生成 memory.json.orphaned-* 备份');
+  const orphanContent = JSON.parse(readFileSync(join(STATE_DIR, orphanBackups[0]), 'utf8'));
+  assert.ok(
+    orphanContent.entries.some(entry => entry.id === survivorId),
+    '孤儿备份应包含原记忆条目',
+  );
+  assert.match(relayLog, /另存备份/, '日志应记录孤儿备份');
+  ok('房间状态损坏：孤儿记忆先另存备份再丢弃，不静默丢数据');
 
   // ---------------- 损坏文件兜底 ----------------
   await stopRelay('SIGTERM');

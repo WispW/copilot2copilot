@@ -363,7 +363,7 @@ export class RelayTransport implements Transport {
    * 中继控制面操作（房间 / 管理）：请求发往 to='server'，中继应答的 id 与请求相同。
    * 未连接或超时（旧版中继不认识该操作）时返回 ok=false，由界面提示。
    */
-  controlOp(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
+  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.resolve({ ok: false, error: '未连接中继服务器，无法执行该操作' });
     }

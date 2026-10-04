@@ -489,11 +489,23 @@ function loadMemory() {
       });
     }
   }
-  // 所属房间已不存在（状态文件被手工改动等）的条目不可达：直接丢弃并记日志，避免无主数据堆积
+  // 所属房间已不存在（rooms.json 损坏 / 被手工改动等）的条目不可达：
+  // 先把原 memory.json 另存一份再丢弃，避免后续写入用（几乎为空的）内存集合覆盖原文件造成不可逆丢失；
+  // 备份失败时保留孤儿条目在内存中——宁可在文件里多留，也不静默丢数据。
+  const orphanRoomIds = [...memoryByRoom.keys()].filter(roomId => !rooms.has(roomId));
   let orphaned = 0;
-  for (const roomId of [...memoryByRoom.keys()]) {
-    if (!rooms.has(roomId)) {
-      orphaned += purgeRoomMemories(roomId);
+  if (orphanRoomIds.length > 0) {
+    const backup = `${MEMORY_FILE}.orphaned-${Date.now()}`;
+    try {
+      fs.copyFileSync(MEMORY_FILE, backup);
+      for (const roomId of orphanRoomIds) {
+        orphaned += purgeRoomMemories(roomId);
+      }
+      log('warn', '记忆条目所属房间缺失：原文件已另存备份，孤儿条目已丢弃', { orphaned, backup });
+    } catch (err) {
+      log('error', '记忆条目所属房间缺失且备份失败：保留孤儿条目，避免覆盖丢失', {
+        rooms: orphanRoomIds.length, file: MEMORY_FILE, error: err.message,
+      });
     }
   }
   log('info', '已载入记忆状态', { entries: memories.size, rooms: memoryByRoom.size, orphaned, file: MEMORY_FILE });

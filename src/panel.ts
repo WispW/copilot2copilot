@@ -232,7 +232,10 @@ export class ConsolePanel {
   private async exportAdminMemory(format: 'json' | 'csv', filters: AdminMemoryFilters): Promise<void> {
     const entries: MemoryEntry[] = [];
     let cursor = '';
-    for (let page = 0; page < 20; page += 1) {
+    let total = 0;
+    let complete = false;
+    // 按 nextCursor 一直取到没有下一页；安全上限 60 页 × 100 条 = 6000（中继全局上限 5000，正常必然取完）
+    for (let page = 0; page < 60; page += 1) {
       const result = await this.deps.control('admin', 'memory-list', {
         limit: 100,
         includeDeleted: filters.includeDeleted !== false,
@@ -247,12 +250,23 @@ export class ConsolePanel {
         void vscode.window.showWarningMessage(`Copilot2Copilot：导出失败——${result.error ?? '读取记忆列表失败'}`);
         return;
       }
-      const payload = (result.env?.payload ?? {}) as { entries?: MemoryEntry[]; nextCursor?: string };
+      const payload = (result.env?.payload ?? {}) as { entries?: MemoryEntry[]; nextCursor?: string; total?: number };
+      if (page === 0) {
+        total = payload.total ?? 0;
+      }
       entries.push(...(payload.entries ?? []));
       cursor = payload.nextCursor ?? '';
       if (!cursor) {
+        complete = true;
         break;
       }
+    }
+    if (!complete || entries.length < total) {
+      // 不再静默导出残缺数据：取不完整就中止并提示，由用户缩小筛选范围
+      void vscode.window.showWarningMessage(
+        `Copilot2Copilot：导出已中止——匹配条目过多（已读取 ${entries.length}/${total || '?'} 条），请缩小筛选范围后重试。`,
+      );
+      return;
     }
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const uri = await vscode.window.showSaveDialog({
@@ -502,7 +516,8 @@ export class ConsolePanel {
           if (!result.ok) {
             void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '写入记忆失败'}`);
           }
-          await this.pushMemoryList(roomId);
+          // 刷新时保持界面当前的「含回收站」状态，避免勾选后列表静默退回
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
         }
         break;
       }
@@ -520,7 +535,7 @@ export class ConsolePanel {
           if (!result.ok) {
             void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '更新记忆失败'}`);
           }
-          await this.pushMemoryList(roomId);
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
         }
         break;
       }
@@ -536,7 +551,7 @@ export class ConsolePanel {
           if (!result.ok) {
             void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '删除记忆失败'}`);
           }
-          await this.pushMemoryList(roomId);
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
         }
         break;
       }
@@ -549,7 +564,7 @@ export class ConsolePanel {
           if (!result.ok) {
             void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '恢复记忆失败'}`);
           }
-          await this.pushMemoryList(roomId);
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
         }
         break;
       }

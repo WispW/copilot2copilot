@@ -101,7 +101,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
       return;
     }
     setLoading(true);
-    post({ type: 'memoryCreate', roomId, text, tags: parseTags(draftTags) });
+    post({ type: 'memoryCreate', roomId, text, tags: parseTags(draftTags), includeDeleted });
     setDraftText('');
     setDraftTags('');
   };
@@ -118,18 +118,19 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
       revision: editing.revision,
       text: editing.text.trim(),
       tags: parseTags(editing.tags),
+      includeDeleted,
     });
     setEditing(null);
   };
 
   const remove = (entry: MemoryEntry): void => {
     setLoading(true);
-    post({ type: 'memoryDelete', roomId, entryId: entry.id, revision: entry.revision });
+    post({ type: 'memoryDelete', roomId, entryId: entry.id, revision: entry.revision, includeDeleted });
   };
 
   const restore = (entry: MemoryEntry): void => {
     setLoading(true);
-    post({ type: 'memoryRestore', roomId, entryId: entry.id });
+    post({ type: 'memoryRestore', roomId, entryId: entry.id, includeDeleted });
   };
 
   return (

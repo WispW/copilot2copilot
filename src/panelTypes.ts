@@ -107,10 +107,18 @@ export type WebviewMessage =
   | { type: 'saveTemplate' }
   | { type: 'memoryList'; roomId: string; cursor?: string; includeDeleted?: boolean }
   | { type: 'memorySearch'; roomId?: string; query: string }
-  | { type: 'memoryCreate'; roomId: string; text: string; tags: string[] }
-  | { type: 'memoryUpdate'; roomId: string; entryId: string; revision: number; text: string; tags: string[] }
-  | { type: 'memoryDelete'; roomId: string; entryId: string; revision: number }
-  | { type: 'memoryRestore'; roomId: string; entryId: string }
+  | { type: 'memoryCreate'; roomId: string; text: string; tags: string[]; includeDeleted: boolean }
+  | {
+    type: 'memoryUpdate';
+    roomId: string;
+    entryId: string;
+    revision: number;
+    text: string;
+    tags: string[];
+    includeDeleted: boolean;
+  }
+  | { type: 'memoryDelete'; roomId: string; entryId: string; revision: number; includeDeleted: boolean }
+  | { type: 'memoryRestore'; roomId: string; entryId: string; includeDeleted: boolean }
   | { type: 'adminMemoryList'; filters: AdminMemoryFilters }
   | { type: 'adminMemoryGet'; entryId: string }
   | { type: 'adminMemoryUpdate'; entryId: string; text: string; tags: string[]; filters: AdminMemoryFilters }
