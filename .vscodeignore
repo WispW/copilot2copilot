@@ -7,6 +7,8 @@ tsconfig.json
 .gitignore
 # 本机自用的发布脚本（不入库），不能被打进扩展包
 publish.sh
+# 本机 AI Agent 约定文件，不打进扩展包
+AGENTS.md
 # 本地测试中继的环境变量（含测试令牌），绝不能进扩展包
 .test-relay.env
 .env
