@@ -555,12 +555,27 @@ function trimMemoryHistory(entry) {
   }
 }
 
-/** 记忆检索分词：ASCII 词 / 标识符保留原样，中文按 bigram */
+/**
+ * 记忆检索分词：ASCII 词 / 标识符保留原样，中文按 bigram。
+ * 规范化：剥掉首尾标点（. + - $ # @），并把由 . / - / + 连接的段拆分索引（同时保留全串）——
+ * 这样 `BIN512.` 能命中 `BIN512`、`qq341` 能命中 `qq341-b2d8`，且 `OrderService.pageSize` 仍可按整串精确命中。
+ */
 function memoryTokens(input) {
   const text = String(input || '').toLowerCase();
   const tokens = [];
   for (const match of text.match(/[a-z0-9_$#@.+-]+/g) || []) {
-    tokens.push(match);
+    const whole = match.replace(/^[.+\-$#@]+/, '').replace(/[.+\-$#@]+$/, '');
+    if (!whole) {
+      continue;
+    }
+    tokens.push(whole);
+    if (/[.+-]/.test(whole)) {
+      for (const part of whole.split(/[.+-]+/)) {
+        if (part) {
+          tokens.push(part);
+        }
+      }
+    }
   }
   for (const run of text.match(/[\u3400-\u4dbf\u4e00-\u9fff]+/g) || []) {
     if (run.length === 1) {

@@ -624,16 +624,42 @@ function resolveMemoryRoom(store: Store, input: string | undefined, mode: 'write
   return { roomId: room.id, roomName: room.name };
 }
 
-/** 统一记忆标签：去空白、去重、截断到 8 个（与中继上限一致），返回是否发生截断 */
+/** 标签上限（与中继侧一致）：最多 8 个、单个最多 32 字符 */
+const MEMORY_TAG_MAX_COUNT = 8;
+const MEMORY_TAG_MAX_LEN = 32;
+/** 标签被规范化时的统一提示（工具返回给模型） */
+const TAGS_TRUNCATED_HINT = `标签已规范化：去重、超过 ${MEMORY_TAG_MAX_COUNT} 个截断为 ${MEMORY_TAG_MAX_COUNT} 个、单个超过 ${MEMORY_TAG_MAX_LEN} 字符截断为 ${MEMORY_TAG_MAX_LEN} 字符。`;
+
+/**
+ * 统一记忆标签：去空白、去重、单个截断到 32 字符、最多 8 个（与中继上限一致），
+ * 返回是否发生任何截断——客户端先截断并提示，避免服务端静默截断后模型不知情。
+ */
 function normalizeMemoryTags(raw: unknown): { tags: string[]; truncated: boolean } {
   if (!Array.isArray(raw)) {
     return { tags: [], truncated: false };
   }
-  const unique = [...new Set(raw
-    .filter((tag): tag is string => typeof tag === 'string')
-    .map(tag => tag.trim())
-    .filter(Boolean))];
-  return { tags: unique.slice(0, 8), truncated: unique.length > 8 };
+  let truncated = false;
+  const unique: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const clipped = trimmed.slice(0, MEMORY_TAG_MAX_LEN);
+    if (clipped !== trimmed) {
+      truncated = true;
+    }
+    if (!unique.includes(clipped)) {
+      unique.push(clipped);
+    }
+  }
+  if (unique.length > MEMORY_TAG_MAX_COUNT) {
+    truncated = true;
+  }
+  return { tags: unique.slice(0, MEMORY_TAG_MAX_COUNT), truncated };
 }
 
 interface QueryMemoryInput {
@@ -733,7 +759,7 @@ export class RememberMemoryTool implements vscode.LanguageModelTool<RememberMemo
       revision: data.entry?.revision,
       duplicated: data.duplicated === true,
       ...(tagsTruncated ? { tags_truncated: true } : {}),
-      hint: tagsTruncated ? `${hint}（标签超过 8 个，已截断为 8 个）` : hint,
+      hint: tagsTruncated ? `${hint}（${TAGS_TRUNCATED_HINT}）` : hint,
     });
   }
 }
@@ -743,6 +769,61 @@ interface UpdateMemoryInput {
   revision: number;
   text?: string;
   tags?: string[];
+}
+
+interface ForgetMemoryInput {
+  entry_id: string;
+  revision: number;
+}
+
+export class ForgetMemoryTool implements vscode.LanguageModelTool<ForgetMemoryInput> {
+  constructor(private readonly deps: ToolDeps) {}
+
+  async invoke(options: vscode.LanguageModelToolInvocationOptions<ForgetMemoryInput>): Promise<vscode.LanguageModelToolResult> {
+    const { getTransport } = this.deps;
+    const transport = getTransport();
+    if (!transport) {
+      throw new Error('通信通道未连接。请打开 Copilot2Copilot 界面点「连接」后再删除共享记忆。');
+    }
+    const entryId = String(options.input.entry_id ?? '').trim();
+    if (!entryId) {
+      throw new Error('请提供 entry_id（来自 talk2copilot_query_memory 的结果）。');
+    }
+    const revision = Number(options.input.revision);
+    if (!Number.isInteger(revision) || revision < 1) {
+      throw new Error('revision 必须是正整数，取自 query_memory 返回的当前版本号。');
+    }
+    const result = await transport.controlOp('memory', 'delete', { entryId, revision });
+    if (!result.ok) {
+      const current = (result.env?.payload as { entry?: MemoryEntry } | undefined)?.entry;
+      if (current) {
+        return json({
+          status: 'conflict',
+          current: {
+            id: current.id,
+            text: current.text,
+            revision: current.revision,
+            updated_by: current.updatedBy,
+            room: current.roomName,
+          },
+          hint: '该记忆刚被他人修改：请基于 current 重新确认是否仍需删除，必要时用 current.revision 再调用一次。',
+        });
+      }
+      throw new Error(`删除共享记忆失败：${result.error ?? '未知原因'}`);
+    }
+    const payload = (result.env?.payload ?? {}) as { entry?: MemoryEntry; unchanged?: boolean };
+    const alreadyDeleted = payload.unchanged === true;
+    log(`[tool] forget_memory ${entryId}（${alreadyDeleted ? '此前已删除' : '已软删除'}）`);
+    return json({
+      status: 'ok',
+      entry_id: entryId,
+      room: payload.entry?.roomName,
+      already_deleted: alreadyDeleted,
+      hint: alreadyDeleted
+        ? '该条目此前已被删除（软删除），无需重复操作。'
+        : '已软删除：默认列表与检索不再返回；如需找回，请让本机用户在「记忆」页勾选「含回收站」后恢复。',
+    });
+  }
 }
 
 export class UpdateMemoryTool implements vscode.LanguageModelTool<UpdateMemoryInput> {
@@ -802,7 +883,7 @@ export class UpdateMemoryTool implements vscode.LanguageModelTool<UpdateMemoryIn
       entry_id: entryId,
       revision: entry?.revision,
       room: entry?.roomName,
-      ...(tagsTruncated ? { tags_truncated: true, hint: '标签超过 8 个，已截断为 8 个。' } : {}),
+      ...(tagsTruncated ? { tags_truncated: true, hint: TAGS_TRUNCATED_HINT } : {}),
     });
   }
 }
@@ -818,5 +899,6 @@ export function registerTools(context: vscode.ExtensionContext, deps: ToolDeps):
     vscode.lm.registerTool('talk2copilot_query_memory', new QueryMemoryTool(deps)),
     vscode.lm.registerTool('talk2copilot_remember', new RememberMemoryTool(deps)),
     vscode.lm.registerTool('talk2copilot_update_memory', new UpdateMemoryTool(deps)),
+    vscode.lm.registerTool('talk2copilot_forget_memory', new ForgetMemoryTool(deps)),
   );
 }

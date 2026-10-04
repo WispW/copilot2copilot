@@ -246,16 +246,30 @@ try {
   const miss = await mem(alice, 'query', { query: '完全不存在的词汇xyzzy', roomId });
   assert.equal(miss.payload.results.length, 0);
   assert.ok(miss.payload.hint, '无命中时应给出提示');
-  ok('检索：标识符 / 中文 / 标签命中与空结果提示');
+
+  // token 规范化：剥掉首尾标点 + 把 . - + 连接的段拆分索引（同时保留全串）
+  const normWrite = await mem(alice, 'remember', {
+    roomId,
+    text: '规范化验证：BIN512 与 END-TAIL-9Z 标识符',
+    tags: ['qq341-b2d8'],
+  });
+  assert.equal(normWrite.ok, true);
+  const normId = normWrite.payload.entry.id;
+  assert.equal((await mem(alice, 'query', { query: 'BIN512.', roomId })).payload.results[0]?.id, normId, '尾随句点应命中');
+  assert.equal((await mem(alice, 'query', { query: 'qq341', roomId })).payload.results[0]?.id, normId, '连字符标签应能按分段命中');
+  assert.equal((await mem(alice, 'query', { query: 'b2d8', roomId })).payload.results[0]?.id, normId, '分段同样可检索');
+  assert.equal((await mem(alice, 'query', { query: 'END-TAIL-9Z', roomId })).payload.results[0]?.id, normId, '完整标识符仍可精确命中');
+  ok('检索：标识符 / 中文 / 标签命中与空结果提示；token 规范化（首尾标点 + . - + 分段）生效');
 
   // ---------------- 软删 / 恢复 ----------------
+  const activeBeforeDelete = (await mem(alice, 'list', { roomId })).payload.total;
   const removed = await mem(bob, 'delete', { entryId, revision: 3 });
   assert.equal(removed.ok, true);
   assert.equal(removed.payload.entry.deleted.by, 'bob');
   assert.equal((await mem(alice, 'query', { query: 'pageSize', roomId })).payload.results.length, 0, '已删除不参与检索');
   const withDeleted = await mem(alice, 'list', { roomId, includeDeleted: true });
-  assert.equal(withDeleted.payload.total, 2, '回收站包含已删除条目');
-  assert.equal((await mem(alice, 'list', { roomId })).payload.total, 1, '默认列表不含已删除');
+  assert.equal(withDeleted.payload.total, activeBeforeDelete, '软删不改变条目总数（回收站里能看到）');
+  assert.equal((await mem(alice, 'list', { roomId })).payload.total, activeBeforeDelete - 1, '默认列表不含已删除');
   const restored = await mem(alice, 'restore', { entryId });
   assert.equal(restored.ok, true);
   assert.equal((await mem(alice, 'query', { query: 'pageSize', roomId })).payload.results[0].id, entryId, '恢复后可检索');
