@@ -268,8 +268,8 @@ export class RelayTransport implements Transport {
     if (!isEnvelope(parsed)) {
       return;
     }
-    // 控制面：房间 / 管理应答按请求 id 关联；两类都不进消息通道
-    if (parsed.kind === 'room' || parsed.kind === 'admin') {
+    // 控制面：房间 / 管理 / 记忆应答按请求 id 关联；都不进消息通道
+    if (parsed.kind === 'room' || parsed.kind === 'admin' || parsed.kind === 'memory') {
       const resolve = this.pending.get(parsed.id);
       if (resolve) {
         this.pending.delete(parsed.id);
@@ -281,8 +281,10 @@ export class RelayTransport implements Transport {
     }
     if (parsed.kind === 'room-event') {
       const rooms = Array.isArray(parsed.rooms) ? parsed.rooms : [];
-      log(`[relay] 房间列表更新：${rooms.length} 个房间`);
+      const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
+      log(`[relay] 房间列表更新：${rooms.length} 个房间、${categories.length} 个分类`);
       this.store.setRooms(rooms);
+      this.store.setCategories(categories);
       return;
     }
     if (parsed.kind === 'error') {
@@ -361,7 +363,7 @@ export class RelayTransport implements Transport {
    * 中继控制面操作（房间 / 管理）：请求发往 to='server'，中继应答的 id 与请求相同。
    * 未连接或超时（旧版中继不认识该操作）时返回 ok=false，由界面提示。
    */
-  controlOp(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
+  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.resolve({ ok: false, error: '未连接中继服务器，无法执行该操作' });
     }

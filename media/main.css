@@ -156,6 +156,80 @@ input[type="checkbox"] {
   width: auto;
 }
 
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  padding: 4px 6px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
+  padding: 4px 6px;
+  box-sizing: border-box;
+}
+
+.row-wrap select {
+  flex: 1 1 auto;
+}
+
+/* 房间分类分组标题（房间页） */
+.group-title {
+  font-size: 0.95em;
+  color: var(--vscode-descriptionForeground);
+  margin: 18px 0 4px;
+}
+
+/* 回收站里的记忆条目置灰 */
+.deleted-entry {
+  opacity: 0.6;
+}
+
+/* 记忆管理（数据库视图）：紧凑表格 */
+.mem-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+  margin: 6px 0;
+}
+
+.mem-table th,
+.mem-table td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 4px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mem-table th {
+  background: var(--vscode-editorWidget-background, transparent);
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mem-table tbody tr {
+  cursor: pointer;
+}
+
+.mem-table tbody tr:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.mem-table .mem-text {
+  max-width: 320px;
+  word-break: break-word;
+}
+
 h2 {
   font-size: 1.05em;
   margin: 0;

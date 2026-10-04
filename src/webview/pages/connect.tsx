@@ -17,8 +17,8 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
   const status = state.status;
   const relay = state.relayInfo;
   const mine = state.extensionVersion;
-  // 与中继侧的门禁口径一致：忽略 -testN 后缀，测试包与正式包视为同一版本
-  const norm = (v: string): string => v.replace(/-test\d+$/i, '');
+  // 与中继侧的门禁口径一致：忽略 -testN / -testN.M 后缀，测试包与正式包视为同一版本
+  const norm = (v: string): string => v.replace(/-test[\d.]+$/i, '');
   const mismatch = Boolean(relay.version && mine && norm(relay.version) !== norm(mine));
   const myId = state.effectiveIdentity.id || '';
   const missing = state.identityMissing;
@@ -88,7 +88,7 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
         </label>
         <Hint>
           令牌保存在系统密钥库（SecretStorage），不会写进配置文件；改动后需点右上角「保存并应用」。
-          管理令牌用于获得中继管理权限（查看 / 踢出 / 封禁在线设备，并对所有房间拥有所有者权限）。
+          管理令牌用于获得中继管理权限（查看 / 踢出 / 封禁在线设备，并管理所有房间与分类）。
         </Hint>
       </Section>
 

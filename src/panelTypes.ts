@@ -1,4 +1,4 @@
-import type { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
+import type { AdminDevice, ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
 import type { AppConfig, HistoryItem, WorkspaceIdentity } from './store';
 import type { TransportStatus } from './transport/types';
 
@@ -16,8 +16,10 @@ export interface PanelState {
   messages: HistoryItem[];
   onlineIds: string[];
   identityMissing: string[];
-  /** 房间列表（中继下发）：可见域，未加入房间时看不到其他设备 */
+  /** 房间列表（中继下发）：列表全员可见（凭密码加入），未加入房间时看不到其他设备 */
   rooms: RoomSummary[];
+  /** 房间分类（中继下发，仅分组与排序） */
+  categories: RoomCategory[];
   /** 管理员面板：令牌是否已设置、是否验证通过、在线设备与封禁名单 */
   admin: { tokenSet: boolean; verified: boolean; devices: AdminDevice[]; bans: string[] };
   /** 中继运行版本与协议号（连接成功后获取，供版本对照） */
@@ -36,6 +38,58 @@ export interface PanelStateMessage {
   state: PanelState;
 }
 
+/** 扩展 → webview：记忆数据推送（面板按需请求，不随状态快照周期刷新） */
+export interface PanelMemoryMessage {
+  type: 'memoryState';
+  roomId: string;
+  mode: 'list' | 'search';
+  query?: string;
+  entries: MemoryEntry[];
+  total: number;
+  nextCursor: string;
+  /** 查询失败原因（ok=false 时） */
+  error?: string;
+}
+
+/** 记忆管理（管理员数据库视图）筛选条件 */
+export interface AdminMemoryFilters {
+  roomId?: string;
+  q?: string;
+  author?: string;
+  tag?: string;
+  includeDeleted: boolean;
+  deletedOnly?: boolean;
+  cursor?: string;
+}
+
+/** 每个房间的记忆统计（管理视图） */
+export interface AdminMemoryRoomStats {
+  id: string;
+  name: string;
+  total: number;
+  active: number;
+  deleted: number;
+  bytes: number;
+}
+
+/** 扩展 → webview：管理员记忆列表 */
+export interface PanelAdminMemoryMessage {
+  type: 'adminMemoryState';
+  entries: MemoryEntry[];
+  total: number;
+  nextCursor: string;
+  rooms: AdminMemoryRoomStats[];
+  filters: AdminMemoryFilters;
+  error?: string;
+}
+
+/** 扩展 → webview：管理员记忆详情（entry 缺省表示关闭详情） */
+export interface PanelAdminMemoryDetailMessage {
+  type: 'adminMemoryDetail';
+  entry?: MemoryEntry;
+  error?: string;
+}
+
 /** webview → 扩展：界面动作 */
 export type WebviewMessage =
   | { type: 'ready' }
@@ -51,6 +105,26 @@ export type WebviewMessage =
   | { type: 'resetLoopGuard' }
   | { type: 'toggleColleague'; peerId: string; enabled: boolean }
   | { type: 'saveTemplate' }
+  | { type: 'memoryList'; roomId: string; cursor?: string; includeDeleted?: boolean }
+  | { type: 'memorySearch'; roomId?: string; query: string }
+  | { type: 'memoryCreate'; roomId: string; text: string; tags: string[]; includeDeleted: boolean }
+  | {
+    type: 'memoryUpdate';
+    roomId: string;
+    entryId: string;
+    revision: number;
+    text: string;
+    tags: string[];
+    includeDeleted: boolean;
+  }
+  | { type: 'memoryDelete'; roomId: string; entryId: string; revision: number; includeDeleted: boolean }
+  | { type: 'memoryRestore'; roomId: string; entryId: string; includeDeleted: boolean }
+  | { type: 'adminMemoryList'; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryGet'; entryId: string }
+  | { type: 'adminMemoryUpdate'; entryId: string; text: string; tags: string[]; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryRestore'; entryId: string; revision?: number; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryPurge'; entryId?: string; roomId?: string; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryExport'; format: 'json' | 'csv'; filters: AdminMemoryFilters }
   | { type: 'showLogs' }
   | { type: 'uiError'; message: string }
   | { type: 'uiHint'; message: string };

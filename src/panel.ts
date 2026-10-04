@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { log, showLogs } from './logger';
-import { PanelState } from './panelTypes';
-import { ColleagueProfile, RoomSummary } from './protocol';
+import { AdminMemoryFilters, AdminMemoryRoomStats, PanelState } from './panelTypes';
+import { ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
 import { AppConfig, ColleagueConfig, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
 import { ControlResult, TransportStatus } from './transport/types';
 
@@ -12,8 +13,42 @@ interface PanelDeps {
   restart(): Promise<void>;
   /** 手动断开：停止通道，之后不再自动重连 */
   disconnect(): Promise<void>;
-  control(kind: 'room' | 'admin', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  control(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
   refreshAdmin(): Promise<void>;
+}
+
+/** CSV 单元格转义：含引号/逗号/换行的内容整体加引号并转义内部引号 */
+function csvCell(value: unknown): string {
+  const text = value === undefined || value === null ? '' : String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/** 记忆条目 → CSV（含状态与时间，便于数据库式查看） */
+function memoryCsv(entries: MemoryEntry[]): string {
+  const header = [
+    'id', 'roomId', 'roomName', 'state', 'text', 'tags', 'author', 'createdAt',
+    'revision', 'updatedBy', 'updatedAt', 'sourceRequestId', 'deletedBy', 'deletedAt',
+  ];
+  const lines = [header.join(',')];
+  for (const entry of entries) {
+    lines.push([
+      entry.id,
+      entry.roomId,
+      entry.roomName,
+      entry.deleted ? 'deleted' : 'active',
+      entry.text,
+      entry.tags.join(' '),
+      entry.author,
+      new Date(entry.createdAt).toISOString(),
+      entry.revision,
+      entry.updatedBy,
+      new Date(entry.updatedAt).toISOString(),
+      entry.sourceRequestId ?? '',
+      entry.deleted?.by ?? '',
+      entry.deleted ? new Date(entry.deleted.at).toISOString() : '',
+    ].map(csvCell).join(','));
+  }
+  return lines.join('\n');
 }
 
 export class ConsolePanel {
@@ -102,11 +137,157 @@ export class ConsolePanel {
       onlineIds: this.deps.getOnlineIds(),
       identityMissing: this.store.missingIdentityFields(),
       rooms: this.store.getRooms(),
+      categories: this.store.getCategories(),
       admin: { tokenSet: this.store.hasAdminToken(), ...this.store.getAdminState() },
       relayInfo: this.store.getRelayInfo(),
       extensionVersion: this.store.extensionVersion,
       loopGuard: { windowMs: LOOP_WINDOW_MS, limit: LOOP_MESSAGE_LIMIT },
     };
+  }
+
+  /** 拉取记忆列表并推送给界面（打开面板 / 增删改后刷新都走这里） */
+  private async pushMemoryList(roomId: string, cursor?: string, includeDeleted = false): Promise<void> {
+    const result = await this.deps.control('memory', 'list', {
+      roomId,
+      limit: 50,
+      ...(cursor ? { cursor } : {}),
+      ...(includeDeleted ? { includeDeleted: true } : {}),
+    });
+    this.sendMemoryState(roomId, 'list', result);
+  }
+
+  /** 记忆检索：roomId 为空时检索我加入的全部房间 */
+  private async pushMemorySearch(roomId: string, query: string): Promise<void> {
+    const result = await this.deps.control('memory', 'query', {
+      query,
+      topK: 50,
+      ...(roomId ? { roomId } : {}),
+    });
+    this.sendMemoryState(roomId, 'search', result, query);
+  }
+
+  private sendMemoryState(roomId: string, mode: 'list' | 'search', result: ControlResult, query?: string): void {
+    const payload = (result.env?.payload ?? {}) as {
+      entries?: MemoryEntry[];
+      results?: MemoryEntry[];
+      total?: number;
+      nextCursor?: string;
+    };
+    const entries = mode === 'search' ? (payload.results ?? []) : (payload.entries ?? []);
+    void this.panel?.webview.postMessage({
+      type: 'memoryState',
+      roomId,
+      mode,
+      ...(query !== undefined ? { query } : {}),
+      entries,
+      total: mode === 'search' ? entries.length : (payload.total ?? entries.length),
+      nextCursor: mode === 'search' ? '' : (payload.nextCursor ?? ''),
+      ...(result.ok ? {} : { error: result.error ?? '记忆查询失败' }),
+    });
+  }
+
+  /** 管理员记忆列表（数据库视图）：按筛选条件分页拉取并推送 */
+  private async pushAdminMemory(filters: AdminMemoryFilters): Promise<void> {
+    const result = await this.deps.control('admin', 'memory-list', {
+      limit: 50,
+      includeDeleted: filters.includeDeleted !== false,
+      ...(filters.deletedOnly ? { deletedOnly: true } : {}),
+      ...(filters.roomId ? { roomId: filters.roomId } : {}),
+      ...(filters.q ? { q: filters.q } : {}),
+      ...(filters.author ? { author: filters.author } : {}),
+      ...(filters.tag ? { tag: filters.tag } : {}),
+      ...(filters.cursor ? { cursor: filters.cursor } : {}),
+    });
+    const payload = (result.env?.payload ?? {}) as {
+      entries?: MemoryEntry[];
+      total?: number;
+      nextCursor?: string;
+      rooms?: AdminMemoryRoomStats[];
+    };
+    void this.panel?.webview.postMessage({
+      type: 'adminMemoryState',
+      entries: payload.entries ?? [],
+      total: payload.total ?? 0,
+      nextCursor: payload.nextCursor ?? '',
+      rooms: payload.rooms ?? [],
+      filters,
+      ...(result.ok ? {} : { error: result.error ?? '记忆列表获取失败' }),
+    });
+  }
+
+  /** 管理员记忆详情（含历史版本）；取不到时让界面关闭详情 */
+  private async pushAdminMemoryDetail(entryId: string): Promise<void> {
+    const result = await this.deps.control('memory', 'get', { entryId });
+    const entry = result.ok
+      ? (result.env?.payload as { entry?: MemoryEntry } | undefined)?.entry
+      : undefined;
+    void this.panel?.webview.postMessage({
+      type: 'adminMemoryDetail',
+      ...(entry ? { entry } : {}),
+      ...(result.ok ? {} : { error: result.error ?? '记忆详情获取失败' }),
+    });
+  }
+
+  /** 记忆导出（JSON / CSV）：按当前筛选分页取全量，再写用户选择的文件 */
+  private async exportAdminMemory(format: 'json' | 'csv', filters: AdminMemoryFilters): Promise<void> {
+    const entries: MemoryEntry[] = [];
+    let cursor = '';
+    let total = 0;
+    let complete = false;
+    // 按 nextCursor 一直取到没有下一页；安全上限 60 页 × 100 条 = 6000（中继全局上限 5000，正常必然取完）
+    for (let page = 0; page < 60; page += 1) {
+      const result = await this.deps.control('admin', 'memory-list', {
+        limit: 100,
+        includeDeleted: filters.includeDeleted !== false,
+        ...(filters.deletedOnly ? { deletedOnly: true } : {}),
+        ...(filters.roomId ? { roomId: filters.roomId } : {}),
+        ...(filters.q ? { q: filters.q } : {}),
+        ...(filters.author ? { author: filters.author } : {}),
+        ...(filters.tag ? { tag: filters.tag } : {}),
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!result.ok) {
+        void vscode.window.showWarningMessage(`Copilot2Copilot：导出失败——${result.error ?? '读取记忆列表失败'}`);
+        return;
+      }
+      const payload = (result.env?.payload ?? {}) as { entries?: MemoryEntry[]; nextCursor?: string; total?: number };
+      if (page === 0) {
+        total = payload.total ?? 0;
+      }
+      entries.push(...(payload.entries ?? []));
+      cursor = payload.nextCursor ?? '';
+      if (!cursor) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete || entries.length < total) {
+      // 不再静默导出残缺数据：取不完整就中止并提示，由用户缩小筛选范围
+      void vscode.window.showWarningMessage(
+        `Copilot2Copilot：导出已中止——匹配条目过多（已读取 ${entries.length}/${total || '?'} 条），请缩小筛选范围后重试。`,
+      );
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const uri = await vscode.window.showSaveDialog({
+      saveLabel: '导出',
+      defaultUri: vscode.Uri.file(`copilot2copilot-memory-${stamp}.${format}`),
+      filters: format === 'json' ? { JSON: ['json'] } : { CSV: ['csv'] },
+    });
+    if (!uri) {
+      return;
+    }
+    const content = format === 'json'
+      ? `${JSON.stringify({ exportedAt: new Date().toISOString(), count: entries.length, entries }, null, 2)}\n`
+      : `${memoryCsv(entries)}\n`;
+    try {
+      fs.writeFileSync(uri.fsPath, content, 'utf8');
+    } catch (err) {
+      void vscode.window.showWarningMessage(`Copilot2Copilot：写入导出文件失败——${(err as Error).message}`);
+      return;
+    }
+    log(`[panel] 已导出 ${entries.length} 条记忆到 ${uri.fsPath}`);
+    void vscode.window.showInformationMessage(`Copilot2Copilot：已导出 ${entries.length} 条记忆到 ${uri.fsPath}`);
   }
 
   private async handleMessage(msg: unknown): Promise<void> {
@@ -120,6 +301,16 @@ export class ConsolePanel {
       identity?: ColleagueProfile;
       op?: string;
       payload?: Record<string, unknown>;
+      roomId?: string;
+      cursor?: string;
+      includeDeleted?: boolean;
+      query?: string;
+      text?: string;
+      tags?: string[];
+      entryId?: string;
+      revision?: number;
+      filters?: AdminMemoryFilters;
+      format?: string;
     };
     switch (m.type) {
       case 'ready':
@@ -178,29 +369,27 @@ export class ConsolePanel {
       case 'roomOp': {
         const op = String(m.op ?? '');
         log(`[panel] 房间操作 ${op}`);
+        // 房间列表对所有人可见，因此加入 / 退出前就能查到房间名用于提示
+        const roomId = String((m.payload as { roomId?: string } | undefined)?.roomId ?? '');
+        const roomName = this.store.getRooms().find(room => room.id === roomId)?.name ?? '';
         const result = await this.deps.control('room', op, m.payload);
-        const data = result.env?.payload as { rooms?: RoomSummary[] } | undefined;
+        const data = result.env?.payload as { rooms?: RoomSummary[]; categories?: RoomCategory[] } | undefined;
         if (result.ok && Array.isArray(data?.rooms)) {
           this.store.setRooms(data.rooms);
         }
-        const roomName = String((m.payload as { name?: string } | undefined)?.name ?? '');
-        const memberId = String((m.payload as { memberId?: string } | undefined)?.memberId ?? '');
+        if (result.ok && Array.isArray(data?.categories)) {
+          this.store.setCategories(data.categories);
+        }
         if (!result.ok) {
           void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '房间操作失败'}`);
-        } else {
-          if (op === 'create') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建房间「${roomName}」，把房间名与密码告诉同事，对方加入后即可互相看到`);
-          } else if (op === 'join') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已加入房间${roomName ? `「${roomName}」` : ''}，同房间成员会出现在列表中`);
-          } else if (op === 'kick') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${memberId} 移出房间（已进入「管理 → 房间移出名单」，可在那里解除）`);
-          } else if (op === 'unblock') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${memberId} 的房间移出限制，对方可凭密码重新加入`);
-          }
-          // 房间成员变化会影响管理页的设备行与房间移出名单：一并刷新
-          if (this.store.hasAdminToken()) {
-            await this.deps.refreshAdmin();
-          }
+        } else if (op === 'join') {
+          void vscode.window.showInformationMessage(`Copilot2Copilot：已加入房间${roomName ? `「${roomName}」` : ''}，同房间成员会出现在列表中`);
+        } else if (op === 'leave') {
+          void vscode.window.showInformationMessage(`Copilot2Copilot：已退出房间${roomName ? `「${roomName}」` : ''}`);
+        }
+        // 房间成员变化会影响管理页的设备行与房间移出名单：一并刷新
+        if (result.ok && this.store.hasAdminToken()) {
+          await this.deps.refreshAdmin();
         }
         this.postState();
         break;
@@ -219,18 +408,38 @@ export class ConsolePanel {
       case 'adminOp': {
         const op = String(m.op ?? '');
         log(`[panel] 管理操作 ${op}`);
+        const payload = (m.payload ?? {}) as { target?: string; name?: string; memberId?: string; roomId?: string; categoryId?: string };
+        // 操作完成后房间 / 分类列表会由中继的 room-event 刷新；这里先按当前快照给出提示里的名字
+        const roomName = payload.roomId ? this.store.getRooms().find(room => room.id === payload.roomId)?.name ?? '' : '';
+        const categoryName = payload.categoryId
+          ? this.store.getCategories().find(category => category.id === payload.categoryId)?.name ?? ''
+          : '';
         const result = await this.deps.control('admin', op, m.payload);
         if (!result.ok) {
           void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '管理操作失败'}`);
         } else {
           log(`[panel] 管理操作 ${op} 已生效`);
-          const target = String((m.payload as { target?: string } | undefined)?.target ?? '');
+          const target = String(payload.target ?? '');
           if (op === 'ban') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已封禁 ${target}（它已断开且无法接入），可在「管理 → 封禁名单」解除`);
           } else if (op === 'unban') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${target} 的封禁，对方可点「重试连接」重新接入（不会自动重连）`);
           } else if (op === 'kick') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${target} 移出中继，对方需手动点「重试连接」才能恢复（不会自动重连）`);
+          } else if (op === 'room-create') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建房间「${payload.name ?? ''}」——房间列表所有设备可见，把密码告诉同事即可加入`);
+          } else if (op === 'room-kick') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${payload.memberId ?? ''} 移出房间${roomName ? `「${roomName}」` : ''}（进入该房间的禁止名单，可在房间管理里解除）`);
+          } else if (op === 'room-unblock') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${payload.memberId ?? ''} 的房间移出限制，对方可凭密码重新加入`);
+          } else if (op === 'room-dissolve') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解散房间${roomName ? `「${roomName}」` : ''}`);
+          } else if (op === 'category-create') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建分类「${payload.name ?? ''}」`);
+          } else if (op === 'category-rename') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把分类${categoryName ? `「${categoryName}」` : ''}改名`);
+          } else if (op === 'category-delete') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已删除分类${categoryName ? `「${categoryName}」` : ''}，其下房间已回到「未分类」（房间本身没有删除）`);
           }
         }
         await this.deps.refreshAdmin();
@@ -278,6 +487,160 @@ export class ConsolePanel {
         log('[panel] 已把当前档案的角色/负责内容存为模板');
         void vscode.window.showInformationMessage('Copilot2Copilot：已把当前角色与负责内容存为模板，供新工作区预填（不含 id）。');
         this.postState();
+        break;
+      }
+      case 'memoryList': {
+        const roomId = String(m.roomId ?? '');
+        if (roomId) {
+          await this.pushMemoryList(roomId, m.cursor, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'memorySearch': {
+        const query = String(m.query ?? '').trim();
+        if (query) {
+          await this.pushMemorySearch(String(m.roomId ?? ''), query);
+        }
+        break;
+      }
+      case 'memoryCreate': {
+        const roomId = String(m.roomId ?? '');
+        const text = String(m.text ?? '').trim();
+        if (roomId && text) {
+          log(`[panel] 写入共享记忆（房间 ${roomId}，${text.length} 字符）`);
+          const result = await this.deps.control('memory', 'remember', {
+            roomId,
+            text,
+            tags: Array.isArray(m.tags) ? m.tags : [],
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '写入记忆失败'}`);
+          }
+          // 刷新时保持界面当前的「含回收站」状态，避免勾选后列表静默退回
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'memoryUpdate': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 更新共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'update', {
+            entryId,
+            revision: Number(m.revision),
+            text: String(m.text ?? ''),
+            tags: Array.isArray(m.tags) ? m.tags : [],
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '更新记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'memoryDelete': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 删除共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'delete', {
+            entryId,
+            revision: Number(m.revision),
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '删除记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'memoryRestore': {
+        const roomId = String(m.roomId ?? '');
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          log(`[panel] 恢复共享记忆 ${entryId}`);
+          const result = await this.deps.control('memory', 'restore', { entryId });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '恢复记忆失败'}`);
+          }
+          await this.pushMemoryList(roomId, undefined, m.includeDeleted === true);
+        }
+        break;
+      }
+      case 'adminMemoryList': {
+        await this.pushAdminMemory(m.filters ?? { includeDeleted: true });
+        break;
+      }
+      case 'adminMemoryGet': {
+        const entryId = String(m.entryId ?? '');
+        if (entryId) {
+          await this.pushAdminMemoryDetail(entryId);
+        }
+        break;
+      }
+      case 'adminMemoryUpdate': {
+        const entryId = String(m.entryId ?? '');
+        const filters = m.filters ?? { includeDeleted: true };
+        if (entryId) {
+          log(`[panel] 管理员更新记忆 ${entryId}`);
+          const result = await this.deps.control('admin', 'memory-update', {
+            entryId,
+            text: String(m.text ?? ''),
+            tags: Array.isArray(m.tags) ? m.tags : [],
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '更新记忆失败'}`);
+          }
+          await this.pushAdminMemory(filters);
+          await this.pushAdminMemoryDetail(entryId);
+        }
+        break;
+      }
+      case 'adminMemoryRestore': {
+        const entryId = String(m.entryId ?? '');
+        const filters = m.filters ?? { includeDeleted: true };
+        if (entryId) {
+          log(`[panel] 管理员恢复 / 回滚记忆 ${entryId}${m.revision !== undefined ? ` → r${m.revision}` : ''}`);
+          const result = await this.deps.control('admin', 'memory-restore', {
+            entryId,
+            ...(m.revision !== undefined ? { revision: Number(m.revision) } : {}),
+          });
+          if (!result.ok) {
+            void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '恢复记忆失败'}`);
+          }
+          await this.pushAdminMemory(filters);
+          await this.pushAdminMemoryDetail(entryId);
+        }
+        break;
+      }
+      case 'adminMemoryPurge': {
+        const filters = m.filters ?? { includeDeleted: true };
+        const entryId = String(m.entryId ?? '');
+        const roomId = String(m.roomId ?? '');
+        if (!entryId && !roomId) {
+          break;
+        }
+        log(`[panel] 管理员彻底删除记忆 ${entryId || `（清空房间 ${roomId}）`}`);
+        const result = await this.deps.control(
+          'admin',
+          'memory-purge',
+          entryId ? { entryId } : { roomId, confirm: true },
+        );
+        if (!result.ok) {
+          void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '删除记忆失败'}`);
+        } else if (entryId) {
+          void vscode.window.showInformationMessage('Copilot2Copilot：已彻底删除该条记忆（不可恢复）。');
+        } else {
+          const removed = (result.env?.payload as { removed?: number } | undefined)?.removed ?? 0;
+          void vscode.window.showInformationMessage(`Copilot2Copilot：已清空该房间的记忆（共 ${removed} 条，不可恢复）。`);
+        }
+        await this.pushAdminMemory(filters);
+        void this.panel?.webview.postMessage({ type: 'adminMemoryDetail' }); // 关闭详情
+        break;
+      }
+      case 'adminMemoryExport': {
+        await this.exportAdminMemory(m.format === 'csv' ? 'csv' : 'json', m.filters ?? { includeDeleted: true });
         break;
       }
       case 'uiError':

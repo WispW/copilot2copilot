@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { post } from './api';
 import { reloadDraft, savePayload, useSnapshot } from './state';
 import { AdminPage } from './pages/admin';
@@ -6,15 +6,17 @@ import { BehaviorPage } from './pages/behavior';
 import { ConnectPage } from './pages/connect';
 import { HelpPage } from './pages/help';
 import { InboxPage } from './pages/inbox';
+import { MemoryPage } from './pages/memory';
 import { PeersPage } from './pages/peers';
 import { RoomsPage } from './pages/rooms';
 
-export type TabId = 'conn' | 'peers' | 'rooms' | 'admin' | 'inbox' | 'behavior' | 'help';
+export type TabId = 'conn' | 'peers' | 'rooms' | 'memory' | 'admin' | 'inbox' | 'behavior' | 'help';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'conn', label: '连接' },
   { id: 'peers', label: 'Copilot 列表' },
   { id: 'rooms', label: '房间' },
+  { id: 'memory', label: '记忆' },
   { id: 'admin', label: '管理' },
   { id: 'inbox', label: '收件箱' },
   { id: 'behavior', label: '行为' },
@@ -32,6 +34,14 @@ export function App() {
   const snap = useSnapshot();
   const [tab, setTab] = useState<TabId>('conn');
   const state = snap.state;
+  // 未填写管理密钥时不显示「管理」面板（已填但未通过验证仍显示，便于修改密钥）
+  const adminVisible = state ? state.admin.tokenSet : false;
+
+  useEffect(() => {
+    if (!adminVisible && tab === 'admin') {
+      setTab('conn');
+    }
+  }, [adminVisible, tab]);
 
   const goto = (next: TabId): void => {
     setTab(next);
@@ -107,7 +117,7 @@ export function App() {
       )}
 
       <nav id="tabs">
-        {TABS.map(t => (
+        {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
           <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
             {t.label}{t.id === 'peers' && state.onlineIds.length > 0 ? ` (${state.onlineIds.length})` : ''}
           </button>
@@ -118,6 +128,7 @@ export function App() {
         {tab === 'conn' && <ConnectPage snap={snap} />}
         {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
         {tab === 'rooms' && <RoomsPage snap={snap} />}
+        {tab === 'memory' && <MemoryPage snap={snap} />}
         {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
         {tab === 'inbox' && <InboxPage snap={snap} />}
         {tab === 'behavior' && <BehaviorPage snap={snap} />}

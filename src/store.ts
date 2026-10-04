@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
+import { AdminDevice, ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
 import { log } from './logger';
 
 export interface ColleagueConfig {
@@ -119,6 +119,8 @@ export class Store {
   private loopResetAt = 0;
   /** 房间列表（中继下发的可见域摘要）：仅内存缓存，连上后由中继下发 */
   private rooms: RoomSummary[] = [];
+  /** 房间分类（中继下发，仅用于分组与排序）：仅内存缓存，连接后随 room-event 更新 */
+  private categories: RoomCategory[] = [];
   /** 管理员视角的在线设备与封禁名单：由 admin.list 应答刷新的内存快照 */
   private adminDevices: AdminDevice[] = [];
   private adminBans: string[] = [];
@@ -481,6 +483,15 @@ export class Store {
 
   setRooms(list: RoomSummary[]): void {
     this.rooms = Array.isArray(list) ? list : [];
+    this.changeEmitter.fire();
+  }
+
+  getCategories(): RoomCategory[] {
+    return this.categories;
+  }
+
+  setCategories(list: RoomCategory[]): void {
+    this.categories = Array.isArray(list) ? list : [];
     this.changeEmitter.fire();
   }
 

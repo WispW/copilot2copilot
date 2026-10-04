@@ -7,6 +7,9 @@ tsconfig.json
 .gitignore
 # 本机自用的发布脚本（不入库），不能被打进扩展包
 publish.sh
+# 本地测试中继的环境变量（含测试令牌），绝不能进扩展包
+.test-relay.env
+.env
 **/*.map
 # 图标加工用的位图源文件（不打进扩展包）
 111.png

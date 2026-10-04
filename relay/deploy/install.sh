@@ -150,13 +150,14 @@ if [[ -z "$body" ]]; then
 fi
 
 echo "$body"
-# 版本门禁配套检查：/healthz 的中继版本必须与仓库 package.json 一致，
-# 否则客户端会因版本不一致被拒绝接入（4008）
+# 版本门禁配套检查：/healthz 的中继版本必须与仓库 package.json 一致（忽略 -testN / -testN.M
+# 测试包后缀，与客户端/中继的版本门禁同一口径），否则客户端会因版本不一致被拒绝接入（4008）
+norm_version() { printf '%s' "$1" | sed -E 's/-test[0-9.]+$//'; }
 repo_version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/package.json" | head -1)"
 body_version="$(printf '%s' "$body" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
 if [[ -z "$body_version" ]]; then
   echo "警告：/healthz 未返回版本号，运行中的可能仍是旧代码。请执行：sudo systemctl restart ${UNIT_NAME}" >&2
-elif [[ -n "$repo_version" && "$repo_version" != "$body_version" ]]; then
+elif [[ -n "$repo_version" && "$(norm_version "$repo_version")" != "$(norm_version "$body_version")" ]]; then
   echo "警告：运行中的中继版本为 ${body_version}，仓库当前版本为 ${repo_version}，客户端将被版本门禁拒绝接入。请确认代码已同步部署。" >&2
 fi
 # 确认进程里跑的是本次安装的代码：/peers 是较新版本才有的端点，旧版会 404
@@ -170,5 +171,5 @@ echo
 echo "安装完成。客户端「连接 → 中继模式」填写："
 echo "  地址 ws://<本机可达 IP>:${port}    密码见 sudo cat $ENV_FILE"
 echo "  管理令牌（可选，用于踢出/封禁/管理所有房间）见同一文件；不使用可留空。"
-echo "  注意：扩展版本必须与本中继版本一致（${repo_version:-见 package.json}），否则中继会拒绝接入（4008）。"
+echo "  注意：扩展版本必须与本中继版本一致（$(norm_version "${repo_version:-见 package.json}")，-testN / -testN.M 测试包后缀会被忽略），否则中继会拒绝接入（4008）。"
 echo "若本机只应经反向代理 / 隧道对外，请把 $ENV_FILE 里的 HOST 改为 127.0.0.1 后重启服务。"
