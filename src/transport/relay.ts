@@ -281,8 +281,10 @@ export class RelayTransport implements Transport {
     }
     if (parsed.kind === 'room-event') {
       const rooms = Array.isArray(parsed.rooms) ? parsed.rooms : [];
-      log(`[relay] 房间列表更新：${rooms.length} 个房间`);
+      const categories = Array.isArray(parsed.categories) ? parsed.categories : [];
+      log(`[relay] 房间列表更新：${rooms.length} 个房间、${categories.length} 个分类`);
       this.store.setRooms(rooms);
+      this.store.setCategories(categories);
       return;
     }
     if (parsed.kind === 'error') {

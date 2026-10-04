@@ -1,4 +1,4 @@
-import type { AdminDevice, ColleagueProfile, RoomSummary } from './protocol';
+import type { AdminDevice, ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
 import type { AppConfig, HistoryItem, WorkspaceIdentity } from './store';
 import type { TransportStatus } from './transport/types';
 
@@ -16,8 +16,10 @@ export interface PanelState {
   messages: HistoryItem[];
   onlineIds: string[];
   identityMissing: string[];
-  /** 房间列表（中继下发）：可见域，未加入房间时看不到其他设备 */
+  /** 房间列表（中继下发）：列表全员可见（凭密码加入），未加入房间时看不到其他设备 */
   rooms: RoomSummary[];
+  /** 房间分类（中继下发，仅分组与排序） */
+  categories: RoomCategory[];
   /** 管理员面板：令牌是否已设置、是否验证通过、在线设备与封禁名单 */
   admin: { tokenSet: boolean; verified: boolean; devices: AdminDevice[]; bans: string[] };
   /** 中继运行版本与协议号（连接成功后获取，供版本对照） */

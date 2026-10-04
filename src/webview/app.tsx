@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { post } from './api';
 import { reloadDraft, savePayload, useSnapshot } from './state';
 import { AdminPage } from './pages/admin';
@@ -32,6 +32,14 @@ export function App() {
   const snap = useSnapshot();
   const [tab, setTab] = useState<TabId>('conn');
   const state = snap.state;
+  // 未填写管理密钥时不显示「管理」面板（已填但未通过验证仍显示，便于修改密钥）
+  const adminVisible = state ? state.admin.tokenSet : false;
+
+  useEffect(() => {
+    if (!adminVisible && tab === 'admin') {
+      setTab('conn');
+    }
+  }, [adminVisible, tab]);
 
   const goto = (next: TabId): void => {
     setTab(next);
@@ -107,7 +115,7 @@ export function App() {
       )}
 
       <nav id="tabs">
-        {TABS.map(t => (
+        {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
           <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
             {t.label}{t.id === 'peers' && state.onlineIds.length > 0 ? ` (${state.onlineIds.length})` : ''}
           </button>

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { log, showLogs } from './logger';
 import { PanelState } from './panelTypes';
-import { ColleagueProfile, RoomSummary } from './protocol';
+import { ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
 import { AppConfig, ColleagueConfig, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
 import { ControlResult, TransportStatus } from './transport/types';
 
@@ -102,6 +102,7 @@ export class ConsolePanel {
       onlineIds: this.deps.getOnlineIds(),
       identityMissing: this.store.missingIdentityFields(),
       rooms: this.store.getRooms(),
+      categories: this.store.getCategories(),
       admin: { tokenSet: this.store.hasAdminToken(), ...this.store.getAdminState() },
       relayInfo: this.store.getRelayInfo(),
       extensionVersion: this.store.extensionVersion,
@@ -178,29 +179,27 @@ export class ConsolePanel {
       case 'roomOp': {
         const op = String(m.op ?? '');
         log(`[panel] 房间操作 ${op}`);
+        // 房间列表对所有人可见，因此加入 / 退出前就能查到房间名用于提示
+        const roomId = String((m.payload as { roomId?: string } | undefined)?.roomId ?? '');
+        const roomName = this.store.getRooms().find(room => room.id === roomId)?.name ?? '';
         const result = await this.deps.control('room', op, m.payload);
-        const data = result.env?.payload as { rooms?: RoomSummary[] } | undefined;
+        const data = result.env?.payload as { rooms?: RoomSummary[]; categories?: RoomCategory[] } | undefined;
         if (result.ok && Array.isArray(data?.rooms)) {
           this.store.setRooms(data.rooms);
         }
-        const roomName = String((m.payload as { name?: string } | undefined)?.name ?? '');
-        const memberId = String((m.payload as { memberId?: string } | undefined)?.memberId ?? '');
+        if (result.ok && Array.isArray(data?.categories)) {
+          this.store.setCategories(data.categories);
+        }
         if (!result.ok) {
           void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '房间操作失败'}`);
-        } else {
-          if (op === 'create') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建房间「${roomName}」，把房间名与密码告诉同事，对方加入后即可互相看到`);
-          } else if (op === 'join') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已加入房间${roomName ? `「${roomName}」` : ''}，同房间成员会出现在列表中`);
-          } else if (op === 'kick') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${memberId} 移出房间（已进入「管理 → 房间移出名单」，可在那里解除）`);
-          } else if (op === 'unblock') {
-            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${memberId} 的房间移出限制，对方可凭密码重新加入`);
-          }
-          // 房间成员变化会影响管理页的设备行与房间移出名单：一并刷新
-          if (this.store.hasAdminToken()) {
-            await this.deps.refreshAdmin();
-          }
+        } else if (op === 'join') {
+          void vscode.window.showInformationMessage(`Copilot2Copilot：已加入房间${roomName ? `「${roomName}」` : ''}，同房间成员会出现在列表中`);
+        } else if (op === 'leave') {
+          void vscode.window.showInformationMessage(`Copilot2Copilot：已退出房间${roomName ? `「${roomName}」` : ''}`);
+        }
+        // 房间成员变化会影响管理页的设备行与房间移出名单：一并刷新
+        if (result.ok && this.store.hasAdminToken()) {
+          await this.deps.refreshAdmin();
         }
         this.postState();
         break;
@@ -219,18 +218,38 @@ export class ConsolePanel {
       case 'adminOp': {
         const op = String(m.op ?? '');
         log(`[panel] 管理操作 ${op}`);
+        const payload = (m.payload ?? {}) as { target?: string; name?: string; memberId?: string; roomId?: string; categoryId?: string };
+        // 操作完成后房间 / 分类列表会由中继的 room-event 刷新；这里先按当前快照给出提示里的名字
+        const roomName = payload.roomId ? this.store.getRooms().find(room => room.id === payload.roomId)?.name ?? '' : '';
+        const categoryName = payload.categoryId
+          ? this.store.getCategories().find(category => category.id === payload.categoryId)?.name ?? ''
+          : '';
         const result = await this.deps.control('admin', op, m.payload);
         if (!result.ok) {
           void vscode.window.showWarningMessage(`Copilot2Copilot：${result.error ?? '管理操作失败'}`);
         } else {
           log(`[panel] 管理操作 ${op} 已生效`);
-          const target = String((m.payload as { target?: string } | undefined)?.target ?? '');
+          const target = String(payload.target ?? '');
           if (op === 'ban') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已封禁 ${target}（它已断开且无法接入），可在「管理 → 封禁名单」解除`);
           } else if (op === 'unban') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${target} 的封禁，对方可点「重试连接」重新接入（不会自动重连）`);
           } else if (op === 'kick') {
             void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${target} 移出中继，对方需手动点「重试连接」才能恢复（不会自动重连）`);
+          } else if (op === 'room-create') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建房间「${payload.name ?? ''}」——房间列表所有设备可见，把密码告诉同事即可加入`);
+          } else if (op === 'room-kick') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把 ${payload.memberId ?? ''} 移出房间${roomName ? `「${roomName}」` : ''}（进入该房间的禁止名单，可在房间管理里解除）`);
+          } else if (op === 'room-unblock') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解除 ${payload.memberId ?? ''} 的房间移出限制，对方可凭密码重新加入`);
+          } else if (op === 'room-dissolve') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已解散房间${roomName ? `「${roomName}」` : ''}`);
+          } else if (op === 'category-create') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已创建分类「${payload.name ?? ''}」`);
+          } else if (op === 'category-rename') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已把分类${categoryName ? `「${categoryName}」` : ''}改名`);
+          } else if (op === 'category-delete') {
+            void vscode.window.showInformationMessage(`Copilot2Copilot：已删除分类${categoryName ? `「${categoryName}」` : ''}，其下房间已回到「未分类」（房间本身没有删除）`);
           }
         }
         await this.deps.refreshAdmin();
