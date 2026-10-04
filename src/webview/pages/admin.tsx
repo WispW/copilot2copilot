@@ -2,6 +2,7 @@ import { Chip, ConfirmButton, Hint, Section } from '../components';
 import { post } from '../api';
 import type { Snapshot } from '../state';
 import type { TabId } from '../app';
+import { AdminMemorySection } from './adminMemory';
 
 export function AdminPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId): void }) {
   const state = snap.state;
@@ -44,6 +45,8 @@ export function AdminPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
           </Hint>
         )}
       </Section>
+
+      <AdminMemorySection snap={snap} />
 
       <Section title="在线设备">
         <Hint>「移出」把该设备从<strong>指定房间</strong>踢出；「踢出中继 / 封禁」是设备级操作，均需再点一次确认。</Hint>

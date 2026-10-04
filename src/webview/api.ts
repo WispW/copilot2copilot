@@ -1,4 +1,10 @@
-import type { PanelMemoryMessage, PanelStateMessage, WebviewMessage } from '../panelTypes';
+import type {
+  PanelAdminMemoryDetailMessage,
+  PanelAdminMemoryMessage,
+  PanelMemoryMessage,
+  PanelStateMessage,
+  WebviewMessage,
+} from '../panelTypes';
 
 interface VsCodeApi {
   postMessage(message: WebviewMessage): void;
@@ -32,6 +38,30 @@ export function onMemoryState(handler: (msg: PanelMemoryMessage) => void): () =>
   const listener = (event: MessageEvent): void => {
     const data = event.data as PanelMemoryMessage | undefined;
     if (data && data.type === 'memoryState') {
+      handler(data);
+    }
+  };
+  window.addEventListener('message', listener);
+  return () => window.removeEventListener('message', listener);
+}
+
+/** 订阅管理员记忆列表（数据库视图）推送 */
+export function onAdminMemoryState(handler: (msg: PanelAdminMemoryMessage) => void): () => void {
+  const listener = (event: MessageEvent): void => {
+    const data = event.data as PanelAdminMemoryMessage | undefined;
+    if (data && data.type === 'adminMemoryState') {
+      handler(data);
+    }
+  };
+  window.addEventListener('message', listener);
+  return () => window.removeEventListener('message', listener);
+}
+
+/** 订阅管理员记忆详情推送（entry 缺省表示关闭详情） */
+export function onAdminMemoryDetail(handler: (msg: PanelAdminMemoryDetailMessage) => void): () => void {
+  const listener = (event: MessageEvent): void => {
+    const data = event.data as PanelAdminMemoryDetailMessage | undefined;
+    if (data && data.type === 'adminMemoryDetail') {
       handler(data);
     }
   };

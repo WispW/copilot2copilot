@@ -51,6 +51,45 @@ export interface PanelMemoryMessage {
   error?: string;
 }
 
+/** 记忆管理（管理员数据库视图）筛选条件 */
+export interface AdminMemoryFilters {
+  roomId?: string;
+  q?: string;
+  author?: string;
+  tag?: string;
+  includeDeleted: boolean;
+  deletedOnly?: boolean;
+  cursor?: string;
+}
+
+/** 每个房间的记忆统计（管理视图） */
+export interface AdminMemoryRoomStats {
+  id: string;
+  name: string;
+  total: number;
+  active: number;
+  deleted: number;
+  bytes: number;
+}
+
+/** 扩展 → webview：管理员记忆列表 */
+export interface PanelAdminMemoryMessage {
+  type: 'adminMemoryState';
+  entries: MemoryEntry[];
+  total: number;
+  nextCursor: string;
+  rooms: AdminMemoryRoomStats[];
+  filters: AdminMemoryFilters;
+  error?: string;
+}
+
+/** 扩展 → webview：管理员记忆详情（entry 缺省表示关闭详情） */
+export interface PanelAdminMemoryDetailMessage {
+  type: 'adminMemoryDetail';
+  entry?: MemoryEntry;
+  error?: string;
+}
+
 /** webview → 扩展：界面动作 */
 export type WebviewMessage =
   | { type: 'ready' }
@@ -72,6 +111,12 @@ export type WebviewMessage =
   | { type: 'memoryUpdate'; roomId: string; entryId: string; revision: number; text: string; tags: string[] }
   | { type: 'memoryDelete'; roomId: string; entryId: string; revision: number }
   | { type: 'memoryRestore'; roomId: string; entryId: string }
+  | { type: 'adminMemoryList'; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryGet'; entryId: string }
+  | { type: 'adminMemoryUpdate'; entryId: string; text: string; tags: string[]; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryRestore'; entryId: string; revision?: number; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryPurge'; entryId?: string; roomId?: string; filters: AdminMemoryFilters }
+  | { type: 'adminMemoryExport'; format: 'json' | 'csv'; filters: AdminMemoryFilters }
   | { type: 'showLogs' }
   | { type: 'uiError'; message: string }
   | { type: 'uiHint'; message: string };

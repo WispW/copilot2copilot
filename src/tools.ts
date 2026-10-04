@@ -243,8 +243,13 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
         request_id: env.id,
         target: colleague.id,
         hint: reachable
-          ? `已等待 ${waitSec} 秒仍未收到回复。请【暂停当前任务的其他步骤】，立即调用 talk2copilot_wait_reply（request_id="${env.id}"）继续等待，并建议连续调用（每次最长 180 秒）直到拿到回复。若先去做别的事，回复到达时可能已没有等待者，只能作为一条排队消息注入对话，容易错过或重复处理。`
-          : `对方当前离线（消息已在本机排队），等待 ${waitSec} 秒未收到回复。请稍后用 talk2copilot_wait_reply（request_id="${env.id}"）继续等待；对方上线并回复后即可拿到结果。等待期间不要推进依赖该回复的步骤。`,
+          ? `已等待 ${waitSec} 秒仍未收到回复。请先用 talk2copilot_list_colleagues 确认对方是否仍在线：`
+            + `在线 → 暂停当前任务的其他步骤，立即连续调用 talk2copilot_wait_reply（request_id="${env.id}"，每次最长 180 秒）继续等待；`
+            + `已离线 → 停止空等，把情况汇报给本机用户（对方上线后可再继续等待）。`
+            + `不要在等待期间推进其他工作——那样回复到达时可能已没有等待者，只能作为排队消息注入对话。`
+          : `对方当前离线（消息已在本机排队），等待 ${waitSec} 秒未收到回复。请先用 talk2copilot_list_colleagues 确认对方是否已上线：`
+            + `上线后用 talk2copilot_wait_reply（request_id="${env.id}"）继续等待；对方上线并回复后即可拿到结果。`
+            + `等待期间不要推进依赖该回复的步骤。`,
       });
     }
     log(`[tool] send_message 已收到回复（消息 ${env.id}）`);
@@ -313,7 +318,9 @@ export class WaitReplyTool implements vscode.LanguageModelTool<WaitReplyInput> {
       return json({
         status: 'pending',
         request_id: input.request_id,
-        hint: `已等待 ${waitSec} 秒仍未收到回复。请不要先去做别的事：继续调用 talk2copilot_wait_reply（每次最长 180 秒）等待本条回复，并在等待期间保持当前任务不推进。只有用户明确要求停止、或需要先向用户汇报进度时，才可以结束等待。`,
+        hint: `已等待 ${waitSec} 秒仍未收到回复。请先用 talk2copilot_list_colleagues 确认对方是否仍在线：`
+          + `在线 → 继续调用 talk2copilot_wait_reply（每次最长 180 秒）等待本条回复，期间保持当前任务不推进；`
+          + `已离线 → 停止空等，把情况汇报给本机用户（对方上线后可再继续等待）。`,
       });
     }
     log(`[tool] wait_reply 已收到回复（request_id=${input.request_id}）`);

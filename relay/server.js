@@ -27,7 +27,7 @@
  *       房间状态落盘到 rooms.json（systemd StateDirectory），重启保留；封禁名单落盘在 bans.json。
  * 共享记忆（memory）：房间内成员共用的可编辑事实库，中继是唯一权威存储——权限、乐观锁、词法检索
  *       与生命周期都在服务端完成；条目全员可编辑（带 revision 校验），管理员可跨房间浏览与管理。
- *       状态落盘到 memory.json，房间解散时级联删除。详细设计见 docs/memory-design.md。
+ *       状态落盘到 memory.json，房间解散时级联删除。
  * 管理令牌：持有者可踢出 / 封禁 / 解封任意设备，并管理所有房间与分类。
  * 职责：按 to 字段路由消息；目标不在线时暂存（每目标最多 200 条）；
  *       按接收者定制 presence——客户端连上后向 to='server' 上报自己的档案，
@@ -67,7 +67,7 @@ const ROOM_NAME_MAX = 32;
 /** 分类上限与分类名长度上限（分类仅用于分组与排序） */
 const CATEGORY_LIMIT = 20;
 const CATEGORY_NAME_MAX = 32;
-/** 共享记忆：落盘路径、容量与限流（满了拒绝新写、不自动淘汰；设计见 docs/memory-design.md） */
+/** 共享记忆：落盘路径、容量与限流（满了拒绝新写、不自动淘汰） */
 const MEMORY_FILE = process.env.TALK2COPILOT_MEMORY_FILE
   || path.join(process.env.STATE_DIRECTORY || __dirname, 'memory.json');
 const MEMORY_STATE_VERSION = 1;
@@ -1466,13 +1466,16 @@ function handleAdminOp(ws, id, env) {
       const author = String(req.author || '').trim();
       const tag = String(req.tag || '').trim();
       const includeDeleted = req.includeDeleted !== false; // 管理员默认连已删除一起看
+      const deletedOnly = req.deletedOnly === true;        // 只看回收站
       const limit = Math.min(Math.max(Number(req.limit) || 50, 1), 100);
       const offset = Math.max(Number(req.cursor) || 0, 0);
       let list = [...memories.values()];
       if (roomId) {
         list = list.filter(entry => entry.roomId === roomId);
       }
-      if (!includeDeleted) {
+      if (deletedOnly) {
+        list = list.filter(entry => entry.deleted);
+      } else if (!includeDeleted) {
         list = list.filter(entry => !entry.deleted);
       }
       if (author) {

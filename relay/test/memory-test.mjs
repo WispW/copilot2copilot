@@ -270,6 +270,9 @@ try {
   const withDeleted = await mem(alice, 'list', { roomId, includeDeleted: true });
   assert.equal(withDeleted.payload.total, activeBeforeDelete, '软删不改变条目总数（回收站里能看到）');
   assert.equal((await mem(alice, 'list', { roomId })).payload.total, activeBeforeDelete - 1, '默认列表不含已删除');
+  const recycleBin = await adm(alice, 'memory-list', { deletedOnly: true });
+  assert.equal(recycleBin.payload.total, 1, '管理员回收站视图（deletedOnly）只含已删除条目');
+  assert.equal(recycleBin.payload.entries[0].id, entryId);
   const restored = await mem(alice, 'restore', { entryId });
   assert.equal(restored.ok, true);
   assert.equal((await mem(alice, 'query', { query: 'pageSize', roomId })).payload.results[0].id, entryId, '恢复后可检索');
