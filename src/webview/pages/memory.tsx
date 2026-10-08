@@ -149,7 +149,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                   ))}
                 </select>
               </label>
-              <label>
+              <label class="wide">
                 搜索
                 <input
                   value={query}
@@ -162,7 +162,6 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                   }}
                 />
               </label>
-              <button class="small" onClick={search} disabled={!roomId}>检索</button>
               <label class="row">
                 <input
                   type="checkbox"
@@ -171,6 +170,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                 />
                 含回收站
               </label>
+              <button class="small" onClick={search} disabled={!roomId}>检索</button>
             </div>
           )}
         <Hint>

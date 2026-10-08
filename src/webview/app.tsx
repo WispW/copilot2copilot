@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { post } from './api';
-import { reloadDraft, savePayload, useSnapshot } from './state';
+import { savePayload, useSnapshot } from './state';
 import { AdminPage } from './pages/admin';
 import { BehaviorPage } from './pages/behavior';
 import { ConnectPage } from './pages/connect';
@@ -77,7 +77,7 @@ export function App() {
   };
 
   return (
-    <div>
+    <div class="shell">
       <header>
         <div class="status-row">
           <span class={`dot ${status.state}`}></span>
@@ -91,10 +91,9 @@ export function App() {
             : <button class="primary" onClick={() => post({ type: 'connect' })}>{status.state === 'offline' ? '重试连接' : '连接'}</button>}
           <button onClick={() => post({ type: 'showLogs' })}>日志</button>
           <button
-            disabled={!snap.dirty}
-            title="放弃未保存的修改，恢复为当前生效配置"
-            onClick={reloadDraft}
-          >重新载入</button>
+            title="重新加载整个界面（等同于关闭页面重新打开）；未保存的修改会丢失"
+            onClick={() => window.location.reload()}
+          >刷新界面</button>
           <button
             class="primary"
             disabled={!snap.dirty}
@@ -104,36 +103,44 @@ export function App() {
         </div>
       </header>
 
-      {snap.dirty && (
-        <div class="banner dirty">
-          有未保存的修改（字段高亮处已改动），点右上角「保存并应用」生效。
-        </div>
-      )}
-      {state.identityMissing.length > 0 && (
-        <div class="banner">
-          本工作区档案缺少 {state.identityMissing.join('、')}，补全前无法与同事通信。
-          {tab !== 'conn' && <button class="small" onClick={() => goto('conn')}>去连接页</button>}
-        </div>
-      )}
+      <div class="layout">
+        <nav class="side">
+          {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
+            <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
+              <span class="label">{t.label}</span>
+              {t.id === 'peers' && state.onlineIds.length > 0 && <span class="count">{state.onlineIds.length}</span>}
+              {t.id === 'inbox' && unread > 0 && <span class="count">{unread}</span>}
+            </button>
+          ))}
+          <div class="side-foot">
+            <span class="hint">扩展 {state.extensionVersion || '未知'}</span>
+            {state.relayInfo.version && <span class="hint">中继 {state.relayInfo.version}</span>}
+          </div>
+        </nav>
 
-      <nav id="tabs">
-        {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
-          <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
-            {t.label}{t.id === 'peers' && state.onlineIds.length > 0 ? ` (${state.onlineIds.length})` : ''}
-          </button>
-        ))}
-      </nav>
+        <main>
+          {snap.dirty && (
+            <div class="banner dirty">
+              有未保存的修改（字段高亮处已改动），点右上角「保存并应用」生效。
+            </div>
+          )}
+          {state.identityMissing.length > 0 && (
+            <div class="banner">
+              本工作区档案缺少 {state.identityMissing.join('、')}，补全前无法与同事通信。
+              {tab !== 'conn' && <button class="small" onClick={() => goto('conn')}>去连接页</button>}
+            </div>
+          )}
 
-      <main>
-        {tab === 'conn' && <ConnectPage snap={snap} />}
-        {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
-        {tab === 'rooms' && <RoomsPage snap={snap} />}
-        {tab === 'memory' && <MemoryPage snap={snap} />}
-        {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
-        {tab === 'inbox' && <InboxPage snap={snap} />}
-        {tab === 'behavior' && <BehaviorPage snap={snap} />}
-        {tab === 'help' && <HelpPage snap={snap} />}
-      </main>
+          {tab === 'conn' && <ConnectPage snap={snap} />}
+          {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
+          {tab === 'rooms' && <RoomsPage snap={snap} />}
+          {tab === 'memory' && <MemoryPage snap={snap} />}
+          {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
+          {tab === 'inbox' && <InboxPage snap={snap} />}
+          {tab === 'behavior' && <BehaviorPage snap={snap} />}
+          {tab === 'help' && <HelpPage snap={snap} />}
+        </main>
+      </div>
     </div>
   );
 }

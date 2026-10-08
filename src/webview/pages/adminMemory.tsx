@@ -178,7 +178,7 @@ export function AdminMemorySection({ snap }: { snap: Snapshot }) {
         跨房间查看与维护共享记忆：筛选 / 分页 / 历史版本 / 回滚 / 恢复 / 彻底删除。
         这里能读到全部房间的记忆内容（与消息不同，管理需要）。
       </Hint>
-      <div class="row-wrap">
+      <div class="filters">
         <label>
           房间
           <select value={draft.roomId} onChange={e => setDraft({ ...draft, roomId: e.currentTarget.value })}>
