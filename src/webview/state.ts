@@ -106,7 +106,13 @@ export function initState(): void {
 
 export function useSnapshot(): Snapshot {
   const [snap, setSnap] = useState(snapshot);
-  useEffect(() => subscribe(() => setSnap(snapshot)), []);
+  useEffect(() => {
+    // 订阅建立前可能已有状态更新(如宿主在 ready 后立即推 state):
+    // 建立订阅时立即对齐一次,避免首条推送丢失导致界面停在初始态
+    const unsubscribe = subscribe(() => setSnap(snapshot));
+    setSnap(snapshot);
+    return unsubscribe;
+  }, []);
   return snap;
 }
 
@@ -125,22 +131,6 @@ export function updateIdentity(patch: Partial<IdentityDraft>): void {
 export function updateTokens(patch: Partial<TokenDraft>): void {
   snapshot = { ...snapshot, tokens: { ...snapshot.tokens, ...patch } };
   snapshot.dirty = computeDirty(snapshot);
-  emit();
-}
-
-/** 放弃草稿，恢复为当前生效配置 */
-export function reloadDraft(): void {
-  const current = snapshot.state;
-  if (!current) {
-    return;
-  }
-  snapshot = {
-    ...snapshot,
-    ...draftFrom(current),
-    tokens: emptyTokens,
-    revision: snapshot.revision + 1,
-    dirty: false,
-  };
   emit();
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { post } from './api';
-import { reloadDraft, savePayload, useSnapshot } from './state';
+import { savePayload, useSnapshot } from './state';
 import { AdminPage } from './pages/admin';
 import { BehaviorPage } from './pages/behavior';
 import { ConnectPage } from './pages/connect';
@@ -33,6 +33,8 @@ const STATE_LABEL: Record<string, string> = {
 export function App() {
   const snap = useSnapshot();
   const [tab, setTab] = useState<TabId>('conn');
+  // 「刷新界面」在存在未保存修改时需要二次确认（webview 沙箱忽略原生 confirm）
+  const [confirmRefresh, setConfirmRefresh] = useState(false);
   const state = snap.state;
   // 未填写管理密钥时不显示「管理」面板（已填但未通过验证仍显示，便于修改密钥）
   const adminVisible = state ? state.admin.tokenSet : false;
@@ -42,6 +44,14 @@ export function App() {
       setTab('conn');
     }
   }, [adminVisible, tab]);
+
+  useEffect(() => {
+    if (!confirmRefresh) {
+      return;
+    }
+    const timer = setTimeout(() => setConfirmRefresh(false), 8000);
+    return () => clearTimeout(timer);
+  }, [confirmRefresh]);
 
   const goto = (next: TabId): void => {
     setTab(next);
@@ -77,7 +87,7 @@ export function App() {
   };
 
   return (
-    <div>
+    <div class="shell">
       <header>
         <div class="status-row">
           <span class={`dot ${status.state}`}></span>
@@ -91,10 +101,19 @@ export function App() {
             : <button class="primary" onClick={() => post({ type: 'connect' })}>{status.state === 'offline' ? '重试连接' : '连接'}</button>}
           <button onClick={() => post({ type: 'showLogs' })}>日志</button>
           <button
-            disabled={!snap.dirty}
-            title="放弃未保存的修改，恢复为当前生效配置"
-            onClick={reloadDraft}
-          >重新载入</button>
+            class={confirmRefresh ? 'armed' : ''}
+            title={snap.dirty
+              ? '重新加载整个界面；有未保存的修改，点击后会再确认一次'
+              : '重新加载整个界面（等同于关闭页面重新打开）'}
+            onClick={() => {
+              if (snap.dirty && !confirmRefresh) {
+                setConfirmRefresh(true);
+                return;
+              }
+              // 交给扩展重新注入页面（webview 内直接 location.reload() 会丢失注入环境导致黑屏）
+              post({ type: 'reloadWebview' });
+            }}
+          >{confirmRefresh ? '确认刷新（丢弃修改）' : '刷新界面'}</button>
           <button
             class="primary"
             disabled={!snap.dirty}
@@ -104,36 +123,44 @@ export function App() {
         </div>
       </header>
 
-      {snap.dirty && (
-        <div class="banner dirty">
-          有未保存的修改（字段高亮处已改动），点右上角「保存并应用」生效。
-        </div>
-      )}
-      {state.identityMissing.length > 0 && (
-        <div class="banner">
-          本工作区档案缺少 {state.identityMissing.join('、')}，补全前无法与同事通信。
-          {tab !== 'conn' && <button class="small" onClick={() => goto('conn')}>去连接页</button>}
-        </div>
-      )}
+      <div class="layout">
+        <nav class="side">
+          {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
+            <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
+              <span class="label">{t.label}</span>
+              {t.id === 'peers' && state.onlineIds.length > 0 && <span class="count">{state.onlineIds.length}</span>}
+              {t.id === 'inbox' && unread > 0 && <span class="count">{unread}</span>}
+            </button>
+          ))}
+          <div class="side-foot">
+            <span class="hint">扩展 {state.extensionVersion || '未知'}</span>
+            {state.relayInfo.version && <span class="hint">中继 {state.relayInfo.version}</span>}
+          </div>
+        </nav>
 
-      <nav id="tabs">
-        {TABS.filter(t => t.id !== 'admin' || adminVisible).map(t => (
-          <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
-            {t.label}{t.id === 'peers' && state.onlineIds.length > 0 ? ` (${state.onlineIds.length})` : ''}
-          </button>
-        ))}
-      </nav>
+        <main>
+          {snap.dirty && (
+            <div class="banner dirty">
+              有未保存的修改（字段高亮处已改动），点右上角「保存并应用」生效。
+            </div>
+          )}
+          {state.identityMissing.length > 0 && (
+            <div class="banner">
+              本工作区档案缺少 {state.identityMissing.join('、')}，补全前无法与同事通信。
+              {tab !== 'conn' && <button class="small" onClick={() => goto('conn')}>去连接页</button>}
+            </div>
+          )}
 
-      <main>
-        {tab === 'conn' && <ConnectPage snap={snap} />}
-        {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
-        {tab === 'rooms' && <RoomsPage snap={snap} />}
-        {tab === 'memory' && <MemoryPage snap={snap} />}
-        {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
-        {tab === 'inbox' && <InboxPage snap={snap} />}
-        {tab === 'behavior' && <BehaviorPage snap={snap} />}
-        {tab === 'help' && <HelpPage snap={snap} />}
-      </main>
+          {tab === 'conn' && <ConnectPage snap={snap} />}
+          {tab === 'peers' && <PeersPage snap={snap} onGoto={goto} />}
+          {tab === 'rooms' && <RoomsPage snap={snap} />}
+          {tab === 'memory' && <MemoryPage snap={snap} />}
+          {tab === 'admin' && <AdminPage snap={snap} onGoto={goto} />}
+          {tab === 'inbox' && <InboxPage snap={snap} />}
+          {tab === 'behavior' && <BehaviorPage snap={snap} />}
+          {tab === 'help' && <HelpPage snap={snap} />}
+        </main>
+      </div>
     </div>
   );
 }

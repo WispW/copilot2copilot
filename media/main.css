@@ -1,34 +1,57 @@
+/* ============================================================
+   Copilot2Copilot 配置界面样式
+   基准:VS Code 主题变量(--vscode-*);统一圆角 6px、卡片与 12px 间距
+   结构:顶部状态栏(header)+ 侧边导航(nav.side)+ 内容区(main)
+   ============================================================ */
+
 :root {
   color-scheme: light dark;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --border-color: var(--vscode-panel-border, rgba(127, 127, 127, 0.28));
+  --card-bg: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.06));
+  --side-width: 184px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
+  margin: 0;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-foreground);
   background: var(--vscode-editor-background);
-  margin: 0;
-  padding: 0 16px 32px;
 }
 
 .loading {
-  padding: 24px 0;
+  padding: 24px;
   color: var(--vscode-descriptionForeground);
 }
 
-/* 顶部：连接状态 + 连接/保存操作；滚动时保持可见，任何页签下都能操作 */
-header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+/* ---------- 外框:顶部状态栏 + 侧边导航 + 内容区 ---------- */
+
+.shell {
+  height: 100vh;
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+}
+
+header {
+  flex: none;
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 8px 12px;
   flex-wrap: wrap;
-  padding: 10px 0;
-  background: var(--vscode-editor-background);
-  border-bottom: 1px solid var(--vscode-panel-border);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .status-row {
@@ -46,72 +69,133 @@ header {
   flex-wrap: wrap;
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--vscode-descriptionForeground);
-  display: inline-block;
-  flex: none;
-}
-
-.dot.online { background: var(--vscode-testing-iconPassed, #3fb950); }
-.dot.stopped { background: var(--vscode-descriptionForeground); }
-.dot.offline { background: var(--vscode-editorError-foreground, #f85149); }
-.dot.connecting {
-  background: var(--vscode-editorWarning-foreground, #d29922);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
-.grow {
+.layout {
   flex: 1;
-}
-
-nav {
+  min-height: 0;
   display: flex;
-  gap: 4px;
-  margin: 12px 0;
-  border-bottom: 1px solid var(--vscode-panel-border);
-  flex-wrap: wrap;
 }
 
-nav button {
-  background: none;
+/* 侧边导航栏 */
+nav.side {
+  flex: none;
+  width: var(--side-width);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 10px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-color);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+nav.side > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
   color: var(--vscode-foreground);
-  padding: 6px 12px;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: left;
   cursor: pointer;
 }
 
-nav button.active {
-  border-bottom-color: var(--vscode-focusBorder);
-  color: var(--vscode-textLink-foreground);
+nav.side > button:hover {
+  background: var(--vscode-list-hoverBackground);
 }
+
+nav.side > button.active {
+  background: var(--vscode-list-activeSelectionBackground, rgba(127, 127, 127, 0.22));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+nav.side .label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+nav.side .count {
+  flex: none;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+nav.side .side-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 10px 2px;
+  border-top: 1px solid var(--border-color);
+}
+
+nav.side .side-foot .hint {
+  margin: 0;
+  font-size: 11px;
+}
+
+/* 内容区 */
+main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 20px 48px;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---------- 通用控件 ---------- */
 
 button {
   font-family: inherit;
   font-size: inherit;
-  color: var(--vscode-button-secondaryForeground);
-  background: var(--vscode-button-secondaryBackground);
-  border: none;
-  padding: 5px 12px;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  /* 部分主题（如 Dark Modern / 2026 Dark）的次要按钮背景是全透明色，
+     直接用会让按钮“隐身”；这里以「主题色渐变叠加淡灰底」保证任何主题下按钮都可见 */
+  background-image: linear-gradient(
+    var(--vscode-button-secondaryBackground, transparent),
+    var(--vscode-button-secondaryBackground, transparent)
+  );
+  background-color: rgba(127, 127, 127, 0.15);
+  border: 1px solid var(--vscode-button-secondaryBorder, var(--vscode-panel-border, rgba(127, 127, 127, 0.28)));
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  line-height: 18px;
   cursor: pointer;
-  border-radius: 2px;
+  white-space: nowrap;
 }
 
-button:hover {
-  background: var(--vscode-button-secondaryHoverBackground);
+button:hover:not(:disabled) {
+  background-image: linear-gradient(
+    var(--vscode-button-secondaryHoverBackground, transparent),
+    var(--vscode-button-secondaryHoverBackground, transparent)
+  );
+  background-color: rgba(127, 127, 127, 0.24);
 }
 
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+button:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 button.primary {
@@ -124,10 +208,23 @@ button.primary:hover:not(:disabled) {
 }
 
 button.danger {
-  color: var(--vscode-errorForeground);
+  color: var(--vscode-errorForeground, #f85149);
 }
 
-/* 已进入两步确认的按钮：整块染成危险色，避免"再点一次"被忽略 */
+button.danger:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.14);
+}
+
+/* 正向操作(如「启用」):蓝色文字 */
+button.accent {
+  color: var(--vscode-textLink-foreground);
+}
+
+button.accent:hover:not(:disabled) {
+  background: rgba(77, 170, 252, 0.14);
+}
+
+/* 已进入两步确认的按钮:整块染成危险色,避免"再点一次"被忽略 */
 button.armed {
   color: var(--vscode-button-foreground);
   background: var(--vscode-inputValidation-errorBorder, #f85149);
@@ -136,6 +233,8 @@ button.armed {
 
 button.small {
   padding: 2px 8px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 input[type="text"],
@@ -147,13 +246,10 @@ input:not([type]) {
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
-  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  height: 26px;
+  padding: 3px 8px;
   width: 100%;
-  box-sizing: border-box;
-}
-
-input[type="checkbox"] {
-  width: auto;
 }
 
 textarea {
@@ -162,9 +258,9 @@ textarea {
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, transparent);
-  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
   width: 100%;
-  box-sizing: border-box;
   resize: vertical;
 }
 
@@ -174,44 +270,517 @@ select {
   color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground));
   background: var(--vscode-dropdown-background, var(--vscode-input-background));
   border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, transparent));
-  padding: 4px 6px;
-  box-sizing: border-box;
+  border-radius: var(--radius-sm);
+  height: 26px;
+  padding: 2px 6px;
 }
 
-.row-wrap select {
-  flex: 1 1 auto;
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+  border-color: var(--vscode-focusBorder);
 }
 
-/* 房间分类分组标题（房间页） */
-.group-title {
-  font-size: 0.95em;
+input[type="checkbox"] {
+  width: auto;
+  height: auto;
+  flex: none;
+  min-width: 0;
+  accent-color: var(--vscode-focusBorder);
+}
+
+label {
+  display: block;
+  margin: 8px 0;
+}
+
+label > input,
+label > select,
+label > textarea {
+  margin-top: 4px;
+}
+
+/* 勾选类行内标签(如「含回收站」) */
+label.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+label.row > input {
+  width: auto;
+  margin-top: 0;
+}
+
+/* 行内表单:标签 + 输入框 + 按钮 混排 */
+.row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+}
+
+.row-wrap > label,
+label.row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.row-wrap > label {
+  flex: 1 1 200px;
+}
+
+.row-wrap > label.wide {
+  flex: 2 1 320px;
+}
+
+.row-wrap > label.row {
+  flex: 0 0 auto;
+}
+
+.row-wrap > label > input:not([type="checkbox"]),
+.row-wrap > label > select,
+label.row-wrap > input:not([type="checkbox"]),
+label.row-wrap > select {
+  width: auto;
+  margin-top: 0;
+  flex: 1 1 60px;
+  min-width: 60px;
+}
+
+/* 筛选区:网格排布,标签永不换行 */
+.filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.filters > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.filters > label > input,
+.filters > label > select {
+  width: auto;
+  margin-top: 0;
+  flex: 1;
+  min-width: 40px;
+}
+
+.filters > button {
+  justify-self: start;
+}
+
+/* 成组的按钮(如「查询 / 重置」):组内紧挨,组整体占一格左对齐 */
+.filters > .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: start;
+}
+
+/* 档案网格(连接页) */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 2px 14px;
+}
+
+.grid label {
+  margin: 6px 0;
+}
+
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* ---------- 文本与提示 ---------- */
+
+.hint {
   color: var(--vscode-descriptionForeground);
-  margin: 18px 0 4px;
+  font-size: 12px;
+  margin: 4px 0;
 }
 
-/* 回收站里的记忆条目置灰 */
-.deleted-entry {
-  opacity: 0.6;
+.hint.conflict {
+  color: var(--vscode-editorError-foreground, #f85149);
 }
 
-/* 记忆管理（数据库视图）：紧凑表格 */
+code {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.grow {
+  flex: 1;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+  background: var(--vscode-inputValidation-warningBackground, rgba(210, 153, 34, 0.15));
+  border-radius: var(--radius-sm);
+}
+
+.banner.dirty {
+  border-left-color: var(--vscode-focusBorder);
+  background: var(--vscode-textBlockQuote-background);
+}
+
+.badge {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.badge.ok {
+  background: rgba(63, 185, 80, 0.2);
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.badge.warn {
+  background: rgba(210, 153, 34, 0.2);
+  color: var(--vscode-editorWarning-foreground, #d29922);
+}
+
+/* ---------- 卡片 ---------- */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.card-head > input {
+  width: 160px;
+  flex: none;
+}
+
+.group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  margin: 2px 0 0;
+}
+
+/* 连接状态行 + 键值表 */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 2px 16px;
+  margin: 6px 0;
+}
+
+.kv > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kv .k {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+}
+
+.kv .v {
+  font-family: var(--vscode-editor-font-family, monospace);
+  word-break: break-all;
+}
+
+/* 空状态:说明 + 一个明确的下一步按钮 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius);
+}
+
+.empty p {
+  margin: 0;
+}
+
+/* 连接状态点 */
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  display: inline-block;
+  flex: none;
+}
+
+.dot.online {
+  background: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.dot.stopped {
+  background: var(--vscode-descriptionForeground);
+}
+
+.dot.offline {
+  background: var(--vscode-editorError-foreground, #f85149);
+}
+
+.dot.connecting {
+  background: var(--vscode-editorWarning-foreground, #d29922);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ---------- 人员卡片(Copilot 列表 / 管理页设备) ---------- */
+
+.peer {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 8px 0 0;
+}
+
+/* 已停用的沟通方:整体降低存在感,但保持可读与可操作 */
+.peer.disabled {
+  opacity: 0.55;
+}
+
+.peer.disabled .peer-head b {
+  text-decoration: line-through;
+}
+
+.peer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.person-line {
+  margin: 4px 0 0;
+}
+
+/* ---------- 消息卡片(收件箱 / 记忆条目) ---------- */
+
+.msg {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--vscode-focusBorder);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 8px 0 0;
+}
+
+.msg.out {
+  border-left-color: var(--vscode-descriptionForeground);
+}
+
+/* ---------- 收件箱:聊天气泡(收到居左、发出居右) ---------- */
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.chat-row {
+  display: flex;
+}
+
+.chat-row.in {
+  justify-content: flex-start;
+}
+
+.chat-row.out {
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 76%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--card-bg);
+}
+
+.chat-row.out .bubble {
+  background: rgba(14, 99, 156, 0.22);
+  border-color: rgba(14, 99, 156, 0.45);
+}
+
+.bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.bubble-meta b {
+  color: var(--vscode-foreground);
+  font-size: 12px;
+}
+
+.bubble-id {
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.bubble-text {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble .file,
+.bubble pre.body {
+  margin-top: 6px;
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+pre.body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--vscode-textLink-foreground);
+}
+
+.file {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--vscode-textCodeBlock-background);
+  border-left: 2px solid var(--vscode-focusBorder);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  word-break: break-word;
+}
+
+/* ---------- 房间卡片 ---------- */
+
+.card.room {
+  margin: 8px 0 0;
+}
+
+.manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.chip.me {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+/* 成员 / 房间标签:一个成员连同它的操作按钮作为整体换行 */
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0 0;
+}
+
+.member {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 12px;
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+}
+
+/* ---------- 记忆管理(数据库视图)表格 ---------- */
+
 .mem-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.92em;
-  margin: 6px 0;
+  font-size: 12px;
+  margin: 8px 0 0;
 }
 
 .mem-table th,
 .mem-table td {
-  border: 1px solid var(--vscode-panel-border);
-  padding: 4px 6px;
   text-align: left;
   vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.mem-table th {
-  background: var(--vscode-editorWidget-background, transparent);
+.mem-table thead th {
   color: var(--vscode-descriptionForeground);
   font-weight: 600;
   white-space: nowrap;
@@ -226,270 +795,43 @@ select {
 }
 
 .mem-table .mem-text {
-  max-width: 320px;
+  max-width: 340px;
   word-break: break-word;
 }
 
-h2 {
-  font-size: 1.05em;
-  margin: 0;
+/* 回收站里的记忆条目置灰 */
+.deleted-entry {
+  opacity: 0.6;
 }
 
-label {
-  display: block;
-  margin: 8px 0;
-}
+/* ---------- 窄面板适配 ---------- */
 
-label.row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+@media (max-width: 720px) {
+  .layout {
+    flex-direction: column;
+  }
 
-/* 输入框 + 按钮排成一行（房间改名 / 创建房间等） */
-.row-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+  nav.side {
+    flex-direction: row;
+    width: 100%;
+    padding: 6px 8px;
+    gap: 4px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
 
-.row-wrap label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 0;
-  flex: 1 1 220px;
-}
+  nav.side > button {
+    width: auto;
+    flex: none;
+  }
 
-.row-wrap input {
-  flex: 1 1 auto;
-}
+  nav.side .side-foot {
+    display: none;
+  }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 4px 16px;
-}
-
-.hint {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.9em;
-  margin: 4px 0;
-}
-
-.hint.conflict {
-  color: var(--vscode-editorError-foreground, #f85149);
-}
-
-.banner {
-  margin: 8px 0;
-  padding: 8px 12px;
-  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
-  background: var(--vscode-inputValidation-warningBackground, rgba(210, 153, 34, 0.15));
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.banner.dirty {
-  border-left-color: var(--vscode-focusBorder);
-  background: var(--vscode-textBlockQuote-background);
-}
-
-code {
-  background: var(--vscode-textCodeBlock-background);
-  padding: 1px 4px;
-  border-radius: 2px;
-}
-
-/* 区块卡片 */
-.card {
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 4px;
-  padding: 10px 14px;
-  margin: 12px 0;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-}
-
-/* 连接状态：一行状态 + 键值表 */
-.status-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-
-.kv {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 2px 16px;
-  margin: 6px 0;
-}
-
-.kv > div {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.kv .k {
-  color: var(--vscode-descriptionForeground);
-  flex: none;
-}
-
-.kv .v {
-  font-family: var(--vscode-editor-font-family, monospace);
-  word-break: break-all;
-}
-
-/* 空状态：说明 + 一个明确的下一步按钮 */
-.empty {
-  border: 1px dashed var(--vscode-panel-border);
-  border-radius: 4px;
-  padding: 14px;
-  margin: 12px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.empty p {
-  margin: 0;
-}
-
-.peer {
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 4px;
-  padding: 8px 12px;
-  margin: 8px 0;
-}
-
-/* 已停用的沟通方：整体降低存在感，但保持可读与可操作 */
-.peer.disabled {
-  opacity: 0.55;
-}
-
-.peer.disabled .peer-head b {
-  text-decoration: line-through;
-}
-
-.peer-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin-bottom: 4px;
-}
-
-.msg {
-  border: 1px solid var(--vscode-panel-border);
-  border-left: 3px solid var(--vscode-focusBorder);
-  border-radius: 4px;
-  padding: 8px 12px;
-  margin: 8px 0;
-}
-
-.msg.out {
-  border-left-color: var(--vscode-descriptionForeground);
-}
-
-.msg-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.badge {
-  font-size: 0.85em;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
-}
-
-pre.body {
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--vscode-textCodeBlock-background);
-  padding: 8px;
-  margin: 6px 0;
-  max-height: 260px;
-  overflow: auto;
-}
-
-details summary {
-  cursor: pointer;
-  color: var(--vscode-textLink-foreground);
-}
-
-.reply {
-  margin-top: 6px;
-  padding: 6px 8px;
-  background: var(--vscode-textBlockQuote-background);
-  border-left: 2px solid var(--vscode-textBlockQuote-border);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.file {
-  margin: 6px 0;
-  padding: 6px 8px;
-  background: var(--vscode-textCodeBlock-background);
-  border-left: 2px solid var(--vscode-focusBorder);
-  word-break: break-word;
-}
-
-/* 房间卡片：沿用 .peer 的视觉语言，管理区默认折叠 */
-.room {
-  padding: 10px 14px;
-}
-
-.manage {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--vscode-panel-border);
-}
-
-.chip {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
-  font-size: 0.9em;
-}
-
-.chip.me {
-  outline: 1px solid var(--vscode-focusBorder);
-}
-
-/* 成员 / 房间标签：一个成员连同它的操作按钮作为整体换行 */
-.chips {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: 6px 0;
-}
-
-.member {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px;
-  border-radius: 12px;
-  background: var(--vscode-editorWidget-background, transparent);
+  main {
+    padding: 12px 12px 32px;
+  }
 }

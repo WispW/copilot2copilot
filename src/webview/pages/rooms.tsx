@@ -193,7 +193,7 @@ export function RoomsPage({ snap }: { snap: Snapshot }) {
   };
 
   return (
-    <div>
+    <div class="page">
       {verified && (
         <Section
           title="新建房间"

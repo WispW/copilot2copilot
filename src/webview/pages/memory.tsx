@@ -134,7 +134,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
   };
 
   return (
-    <div>
+    <div class="page">
       <Section title="房间共享记忆" extra={<button onClick={reload} disabled={!roomId}>刷新</button>}>
         {!online && <div class="banner">共享记忆保存在中继上，需要先连接中继才能使用（「连接」页）。</div>}
         {joinedRooms.length === 0
@@ -149,7 +149,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                   ))}
                 </select>
               </label>
-              <label>
+              <label class="wide">
                 搜索
                 <input
                   value={query}
@@ -162,7 +162,6 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                   }}
                 />
               </label>
-              <button class="small" onClick={search} disabled={!roomId}>检索</button>
               <label class="row">
                 <input
                   type="checkbox"
@@ -171,6 +170,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
                 />
                 含回收站
               </label>
+              <button class="small" onClick={search} disabled={!roomId}>检索</button>
             </div>
           )}
         <Hint>

@@ -93,6 +93,7 @@ export interface PanelAdminMemoryDetailMessage {
 /** webview → 扩展：界面动作 */
 export type WebviewMessage =
   | { type: 'ready' }
+  | { type: 'reloadWebview' }
   | { type: 'save'; config: AppConfig; identity: WorkspaceIdentity; token: string; adminToken: string }
   | { type: 'connect' }
   | { type: 'disconnect' }

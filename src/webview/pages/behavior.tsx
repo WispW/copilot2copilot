@@ -5,7 +5,7 @@ import { updateDraft, type Snapshot } from '../state';
 export function BehaviorPage({ snap }: { snap: Snapshot }) {
   const loop = snap.state?.loopGuard ?? { windowMs: 300_000, limit: 10 };
   return (
-    <div>
+    <div class="page">
       <Section title="收发行为">
         <label>
           等待回复默认超时（秒）
@@ -50,6 +50,7 @@ export function BehaviorPage({ snap }: { snap: Snapshot }) {
             label="清空消息历史"
             confirmLabel="确认清空？"
             danger
+            large
             onConfirm={() => post({ type: 'clearHistory' })}
           />
         </div>

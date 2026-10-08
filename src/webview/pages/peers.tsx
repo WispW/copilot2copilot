@@ -17,7 +17,7 @@ export function PeersPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
   const joined = state.rooms.some(room => room.joined);
 
   return (
-    <div>
+    <div class="page">
       <Hint>列表由中继自动维护：只显示在线的 Copilot（对方下线后条目自动消失），角色与负责内容由中继下发，无需手工添加或编辑。</Hint>
       {rows.length === 0 && (
         <div class="empty">
@@ -37,18 +37,17 @@ export function PeersPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
           <div key={c.id} class={disabled ? 'peer disabled' : 'peer'}>
             <div class="peer-head">
               <b>{c.id}</b>
-              <span class="hint">{profileReady ? '档案已同步' : '档案未同步'}</span>
-              {disabled && <span class="hint conflict">已停用</span>}
+              <span class={profileReady ? 'badge ok' : 'badge warn'}>{profileReady ? '档案已同步' : '档案未同步'}</span>
+              {disabled && <span class="badge">已停用</span>}
               <span class="grow"></span>
               <button
-                class="small"
+                class={disabled ? 'small accent' : 'small danger'}
                 title="停用后不参与通信，也不会出现在模型可见名单里"
                 onClick={() => post({ type: 'toggleColleague', peerId: c.id, enabled: disabled })}
               >{disabled ? '启用' : '停用'}</button>
             </div>
-            <p class="hint">
-              角色：<b>{c.role || '（等待中继同步）'}</b> · 负责内容：<b>{c.scope || '（等待中继同步）'}</b>
-            </p>
+            <p class="hint person-line">角色：<b>{c.role || '（等待中继同步）'}</b></p>
+            <p class="hint person-line">负责内容：<b>{c.scope || '（等待中继同步）'}</b></p>
           </div>
         );
       })}
