@@ -316,6 +316,17 @@ export class ConsolePanel {
       case 'ready':
         this.postState();
         break;
+      case 'reloadWebview': {
+        // 「刷新界面」：重新注入页面（HTML 含随机 nonce，重设即触发文档重载），等同关闭页面重开。
+        // 不能用 location.reload()：webview 文档由扩展注入，自刷新会丢失注入环境（黑屏）。
+        const panel = this.panel;
+        if (!panel) {
+          break;
+        }
+        log('[panel] 界面请求刷新：重新注入页面');
+        panel.webview.html = this.renderHtml(panel.webview, this.context.extensionUri);
+        break;
+      }
       case 'connect':
         log('[panel] 界面请求连接中继');
         await this.deps.restart();

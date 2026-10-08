@@ -4,7 +4,7 @@ import type { Snapshot } from '../state';
 export function HelpPage({ snap }: { snap: Snapshot }) {
   const loop = snap.state?.loopGuard ?? { windowMs: 300_000, limit: 10 };
   return (
-    <div>
+    <div class="page">
       <Section title="连接与重连">
         <Hint>
           扩展只在两种时机向中继发起连接：<strong>VS Code 启动时自动一次</strong>（可在「连接」页关掉），

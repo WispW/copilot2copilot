@@ -25,7 +25,7 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
   const hasWorkspace = Boolean(state.workspaceLabel);
 
   return (
-    <div>
+    <div class="page">
       <Section title="连接状态">
         <div class="status-line">
           <span class={`dot ${status.state}`}></span>

@@ -134,7 +134,7 @@ export function MemoryPage({ snap }: { snap: Snapshot }) {
   };
 
   return (
-    <div>
+    <div class="page">
       <Section title="房间共享记忆" extra={<button onClick={reload} disabled={!roomId}>刷新</button>}>
         {!online && <div class="banner">共享记忆保存在中继上，需要先连接中继才能使用（「连接」页）。</div>}
         {joinedRooms.length === 0

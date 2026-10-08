@@ -24,7 +24,7 @@ export function AdminPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
   }
 
   return (
-    <div>
+    <div class="page">
       <Section title="管理权限" extra={<button onClick={() => post({ type: 'refreshAdmin' })}>刷新</button>}>
         {!admin.tokenSet && (
           <div class="banner">

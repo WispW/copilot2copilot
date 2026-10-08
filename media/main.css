@@ -153,7 +153,7 @@ main {
   padding: 16px 20px 48px;
 }
 
-main > div {
+.page {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -165,8 +165,14 @@ button {
   font-family: inherit;
   font-size: inherit;
   color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-  background: var(--vscode-button-secondaryBackground, rgba(127, 127, 127, 0.16));
-  border: 1px solid transparent;
+  /* 部分主题（如 Dark Modern / 2026 Dark）的次要按钮背景是全透明色，
+     直接用会让按钮“隐身”；这里以「主题色渐变叠加淡灰底」保证任何主题下按钮都可见 */
+  background-image: linear-gradient(
+    var(--vscode-button-secondaryBackground, transparent),
+    var(--vscode-button-secondaryBackground, transparent)
+  );
+  background-color: rgba(127, 127, 127, 0.15);
+  border: 1px solid var(--vscode-button-secondaryBorder, var(--vscode-panel-border, rgba(127, 127, 127, 0.28)));
   border-radius: var(--radius-sm);
   padding: 4px 12px;
   line-height: 18px;
@@ -175,7 +181,11 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: var(--vscode-button-secondaryHoverBackground, rgba(127, 127, 127, 0.26));
+  background-image: linear-gradient(
+    var(--vscode-button-secondaryHoverBackground, transparent),
+    var(--vscode-button-secondaryHoverBackground, transparent)
+  );
+  background-color: rgba(127, 127, 127, 0.24);
 }
 
 button:disabled {
@@ -336,9 +346,9 @@ label.row-wrap {
   flex: 0 0 auto;
 }
 
-.row-wrap > label > input,
+.row-wrap > label > input:not([type="checkbox"]),
 .row-wrap > label > select,
-label.row-wrap > input,
+label.row-wrap > input:not([type="checkbox"]),
 label.row-wrap > select {
   width: auto;
   margin-top: 0;
@@ -372,6 +382,14 @@ label.row-wrap > select {
 }
 
 .filters > button {
+  justify-self: start;
+}
+
+/* 成组的按钮(如「查询 / 重置」):组内紧挨,组整体占一格左对齐 */
+.filters > .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   justify-self: start;
 }
 
@@ -662,7 +680,6 @@ code {
 }
 
 .bubble .file,
-.bubble .reply,
 .bubble pre.body {
   margin-top: 6px;
 }
@@ -688,16 +705,6 @@ pre.body {
 details summary {
   cursor: pointer;
   color: var(--vscode-textLink-foreground);
-}
-
-.reply {
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: var(--vscode-textBlockQuote-background);
-  border-left: 2px solid var(--vscode-textBlockQuote-border);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .file {

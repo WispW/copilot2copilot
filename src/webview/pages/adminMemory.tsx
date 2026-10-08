@@ -206,8 +206,10 @@ export function AdminMemorySection({ snap }: { snap: Snapshot }) {
             <option value="deleted">仅已删除</option>
           </select>
         </label>
-        <button class="primary small" onClick={search} disabled={loading}>查询</button>
-        <button class="small" onClick={reset}>重置</button>
+        <span class="actions">
+          <button class="primary small" onClick={search} disabled={loading}>查询</button>
+          <button class="small" onClick={reset}>重置</button>
+        </span>
       </div>
       <p class="hint">
         当前筛选 {total} 条 · 全部房间合计 {totals.total} 条（可见 {totals.active} / 回收站 {totals.deleted}，

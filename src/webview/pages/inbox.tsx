@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { Hint, Section } from '../components';
 import { post } from '../api';
 import type { Snapshot } from '../state';
@@ -26,30 +27,43 @@ export function InboxPage({ snap }: { snap: Snapshot }) {
               ? (m.direction === 'in' ? '已回复' : '已收到回复')
               : (m.direction === 'in' ? '未回复' : '等待回复');
             return (
-              <div class={`chat-row ${m.direction}`} key={m.id}>
-                <div class={`bubble ${m.direction}`}>
-                  <div class="bubble-meta">
-                    <b>{m.peerId}</b>
-                    <span>{new Date(m.ts).toLocaleString()}</span>
-                    <span>{status}</span>
-                    <span class="bubble-id">{m.id}</span>
-                  </div>
-                  {m.text && <div class="bubble-text">{m.text}</div>}
-                  {m.file && (
-                    <div class="file">
-                      文件：<b>{m.file.name}</b>（{formatSize(m.file.size)}，sha256 {String(m.file.sha256 || '').slice(0, 12)}…）
-                      {m.direction === 'in' && m.file.path && <><br />已保存到：<code>{m.file.path}</code></>}
+              <Fragment key={m.id}>
+                <div class={`chat-row ${m.direction}`}>
+                  <div class={`bubble ${m.direction}`}>
+                    <div class="bubble-meta">
+                      <b>{m.peerId}</b>
+                      <span>{new Date(m.ts).toLocaleString()}</span>
+                      <span>{status}</span>
+                      <span class="bubble-id">{m.id}</span>
                     </div>
-                  )}
-                  {m.snippet && (
-                    <details>
-                      <summary>代码片段</summary>
-                      <pre class="body">{m.snippet}</pre>
-                    </details>
-                  )}
-                  {m.direction === 'out' && m.replyText && <div class="reply">对方回复：{m.replyText}</div>}
+                    {m.text && <div class="bubble-text">{m.text}</div>}
+                    {m.file && (
+                      <div class="file">
+                        文件：<b>{m.file.name}</b>（{formatSize(m.file.size)}，sha256 {String(m.file.sha256 || '').slice(0, 12)}…）
+                        {m.direction === 'in' && m.file.path && <><br />已保存到：<code>{m.file.path}</code></>}
+                      </div>
+                    )}
+                    {m.snippet && (
+                      <details>
+                        <summary>代码片段</summary>
+                        <pre class="body">{m.snippet}</pre>
+                      </details>
+                    )}
+                  </div>
                 </div>
-              </div>
+                {m.direction === 'out' && m.replyText && (
+                  <div class="chat-row in">
+                    <div class="bubble in">
+                      <div class="bubble-meta">
+                        <b>{m.peerId}</b>
+                        <span>回复</span>
+                        <span class="bubble-id">{m.id}</span>
+                      </div>
+                      <div class="bubble-text">{m.replyText}</div>
+                    </div>
+                  </div>
+                )}
+              </Fragment>
             );
           })}
         </div>

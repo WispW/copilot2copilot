@@ -33,6 +33,8 @@ const STATE_LABEL: Record<string, string> = {
 export function App() {
   const snap = useSnapshot();
   const [tab, setTab] = useState<TabId>('conn');
+  // 「刷新界面」在存在未保存修改时需要二次确认（webview 沙箱忽略原生 confirm）
+  const [confirmRefresh, setConfirmRefresh] = useState(false);
   const state = snap.state;
   // 未填写管理密钥时不显示「管理」面板（已填但未通过验证仍显示，便于修改密钥）
   const adminVisible = state ? state.admin.tokenSet : false;
@@ -42,6 +44,14 @@ export function App() {
       setTab('conn');
     }
   }, [adminVisible, tab]);
+
+  useEffect(() => {
+    if (!confirmRefresh) {
+      return;
+    }
+    const timer = setTimeout(() => setConfirmRefresh(false), 8000);
+    return () => clearTimeout(timer);
+  }, [confirmRefresh]);
 
   const goto = (next: TabId): void => {
     setTab(next);
@@ -91,9 +101,19 @@ export function App() {
             : <button class="primary" onClick={() => post({ type: 'connect' })}>{status.state === 'offline' ? '重试连接' : '连接'}</button>}
           <button onClick={() => post({ type: 'showLogs' })}>日志</button>
           <button
-            title="重新加载整个界面（等同于关闭页面重新打开）；未保存的修改会丢失"
-            onClick={() => window.location.reload()}
-          >刷新界面</button>
+            class={confirmRefresh ? 'armed' : ''}
+            title={snap.dirty
+              ? '重新加载整个界面；有未保存的修改，点击后会再确认一次'
+              : '重新加载整个界面（等同于关闭页面重新打开）'}
+            onClick={() => {
+              if (snap.dirty && !confirmRefresh) {
+                setConfirmRefresh(true);
+                return;
+              }
+              // 交给扩展重新注入页面（webview 内直接 location.reload() 会丢失注入环境导致黑屏）
+              post({ type: 'reloadWebview' });
+            }}
+          >{confirmRefresh ? '确认刷新（丢弃修改）' : '刷新界面'}</button>
           <button
             class="primary"
             disabled={!snap.dirty}

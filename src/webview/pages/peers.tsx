@@ -17,7 +17,7 @@ export function PeersPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
   const joined = state.rooms.some(room => room.joined);
 
   return (
-    <div>
+    <div class="page">
       <Hint>列表由中继自动维护：只显示在线的 Copilot（对方下线后条目自动消失），角色与负责内容由中继下发，无需手工添加或编辑。</Hint>
       {rows.length === 0 && (
         <div class="empty">

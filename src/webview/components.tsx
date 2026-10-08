@@ -72,10 +72,12 @@ export function CopyButton({ text, label = '复制' }: { text: string; label?: s
  * 危险操作的两步确认：VS Code webview 的沙箱会忽略原生 confirm()（静默返回 false），
  * 会让按钮"点了没反应"，因此改成"再点一次确认"；8 秒未确认自动复位。
  */
-export function ConfirmButton({ label, confirmLabel, danger, onConfirm }: {
+export function ConfirmButton({ label, confirmLabel, danger, large, onConfirm }: {
   label: string;
   confirmLabel: string;
   danger?: boolean;
+  /** 独立成行的操作:使用与普通按钮一致的标准尺寸(默认为紧凑小号) */
+  large?: boolean;
   onConfirm(): void;
 }) {
   const [armed, setArmed] = useState(false);
@@ -88,7 +90,7 @@ export function ConfirmButton({ label, confirmLabel, danger, onConfirm }: {
   }, [armed]);
   return (
     <button
-      class={`small${danger ? ' danger' : ''}${armed ? ' armed' : ''}`}
+      class={[large ? '' : 'small', danger ? 'danger' : '', armed ? 'armed' : ''].filter(Boolean).join(' ')}
       onClick={() => {
         if (armed) {
           setArmed(false);
