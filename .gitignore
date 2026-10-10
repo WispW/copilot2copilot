@@ -12,3 +12,5 @@ relay/memory.json*
 .test-relay.env
 # 本机 AI Agent 约定文件（不入库）
 AGENTS.md
+# 方案与设计文档（本地保留，不入库）
+docs/

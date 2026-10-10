@@ -3,7 +3,6 @@ import { post } from '../api';
 import { updateDraft, type Snapshot } from '../state';
 
 export function BehaviorPage({ snap }: { snap: Snapshot }) {
-  const loop = snap.state?.loopGuard ?? { windowMs: 300_000, limit: 10 };
   return (
     <div class="page">
       <Section title="收发行为">
@@ -30,21 +29,29 @@ export function BehaviorPage({ snap }: { snap: Snapshot }) {
             onInput={e => updateDraft({ historyLimit: Number(e.currentTarget.value) || 200 })}
           />
         </label>
-        <Hint>收到同事的消息或回复时，会直接触发本机 Copilot 对话进行处理（不再弹出通知）。改动后需点右上角「保存并应用」。</Hint>
+        <Hint>
+          同事消息是否<strong>自动</strong>交给本机 Copilot 由顶部「无人值守」开关决定：<strong>默认关闭</strong>，
+          此时消息只进收件箱（可逐条「交给 Copilot」）；打开后才自动注入对话。改动后需点右上角「保存并应用」。
+        </Hint>
+        <label class="row" title="写任务开始 / 结束时用系统通知提醒（关闭只是静音，留痕不受影响）">
+          <input
+            type="checkbox"
+            checked={snap.state?.config.behavior.notify !== false}
+            onChange={e => post({ type: 'setNotify', value: e.currentTarget.checked })}
+          />
+          写任务开始 / 结束时发系统通知
+        </label>
       </Section>
 
       <Section title="维护">
         <div class="row-wrap">
+          <button onClick={() => post({ type: 'cancelAllExecGrants' })}>取消所有写授权</button>
+        </div>
+        <Hint>取消后，所有同事都只能进行只读问答；需要重新授权时到「Copilot 列表」逐人打开「可执行」。</Hint>
+        <div class="row-wrap">
           <button onClick={() => post({ type: 'saveTemplate' })}>把当前角色 / 负责内容存为模板</button>
         </div>
         <Hint>模板用于给以后新开的工作区预填角色与负责内容（<strong>不含 id</strong>，避免新窗口与现有窗口撞名）。</Hint>
-        <div class="row-wrap">
-          <button onClick={() => post({ type: 'resetLoopGuard' })}>重置熔断计数</button>
-        </div>
-        <Hint>
-          与同一位同事在 {loop.windowMs / 60000} 分钟内的往来达到 {loop.limit} 条时会自动中止（防止两端无限对话）。
-          点此立即重新计数；窗口随时间滑动，稍后也会自动恢复。
-        </Hint>
         <div class="row-wrap">
           <ConfirmButton
             label="清空消息历史"

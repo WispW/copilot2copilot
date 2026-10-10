@@ -3,8 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { FileHub } from './files';
 import { log } from './logger';
+import { notify } from './notify';
 import { makeEnvelope, MemoryEntry, MessageEnvelope } from './protocol';
-import { colleagueEnabled, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
+import { colleagueEnabled, Store } from './store';
 import { Transport } from './transport/types';
 
 function json(value: unknown): vscode.LanguageModelToolResult {
@@ -21,6 +22,40 @@ function truncate(text: string, max = 600): string {
  * 这样能覆盖「等待刚超时、下一次 wait_reply 还没注册」的空档（模型生成下一次调用需要几秒）。
  */
 export const REPLY_CLAIM_GRACE_MS = 12_000;
+
+/**
+ * 消息正文看起来像"要对方动手"的写请求（只用于给模型提示，不改变任何行为）。
+ * 实测模型会忘记传 intent=task，把它当只读消息发出去、被对方按只读约定拒绝。
+ */
+function looksLikeWriteRequest(text: string): boolean {
+  return /(新建|创建|写入|写一个|写一行|改成|改为|修改|删除|移除|添加|加上|执行|跑一次|跑一遍|安装|提交|commit)/i.test(text);
+}
+
+/** intent=ask 但正文像写请求时给模型一条提醒（不拦截，只是让它知道该怎么重发） */
+function taskIntentHint(intent: 'ask' | 'task', text: string): string | undefined {
+  if (intent === 'task' || !looksLikeWriteRequest(text)) {
+    return undefined;
+  }
+  return '本次按只读消息发出（intent=ask），对方不会修改它的代码或环境。若你要的是对方真的动手，请重新发送并显式带上 intent="task"；对方未开启「可执行」时会回复无法执行。';
+}
+
+/**
+ * 找不到收件人时的报错：把"你有多少个沟通方、多少个在线、该填什么"讲清楚。
+ * 实测报错只写「有多个沟通方时必须显式指定 to」会让人以为是配置没填，其实是没写 to。
+ */
+function missingTargetError(store: Store, transport: Transport | undefined, to?: string): string {
+  const mine = store.config.identity.id;
+  const others = store.config.colleagues.filter(c => c.id !== mine && c.relayPeerId !== mine);
+  if (others.length === 0) {
+    return '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。';
+  }
+  const online = others.filter(c => transport?.isOnline(c.id));
+  if (!to && online.length > 1) {
+    return `未指定 to：当前有 ${online.length} 位在线沟通方（已配置 ${others.length} 位），必须显式指定，例如 to: "${online[0].id}"。`
+      + '可用列表见 talk2copilot_list_colleagues（默认只含在线的同事，且不含你自己）。';
+  }
+  return `找不到沟通方 “${to ?? '（未指定）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`;
+}
 
 /** 等待某条消息的回复：由注入器在收到 reply 时唤醒；无等待者的回复先进入宽限期等待认领 */
 export class ReplyWaiter {
@@ -142,6 +177,8 @@ interface SendInput {
   snippet?: string;
   snippet_language?: string;
   wait_seconds?: number;
+  /** 默认 ask（只问信息）；task = 请求对方执行写操作（对方未授权时会被拒） */
+  intent?: 'ask' | 'task';
 }
 
 export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
@@ -154,12 +191,19 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     const code = options.input.snippet
       ? `\n\n\`\`\`${options.input.snippet_language ?? ''}\n${truncate(options.input.snippet)}\n\`\`\``
       : '';
+    const isTask = options.input.intent === 'task';
+    const authorized = Boolean(colleague && this.deps.store.getGrantedBy().includes(colleague.id));
+    const scope = isTask
+      ? `（写任务：对方将在其用户授权的范围内执行修改并回报；${authorized ? '对方已授权执行' : '对方尚未授权，可能被拒绝'}）`
+      : '（对方只会提供信息，不会修改其代码或环境）';
     return {
-      invocationMessage: `正在向 ${colleague?.id ?? '沟通方'} 发送消息`,
+      invocationMessage: isTask
+        ? `正在向 ${colleague?.id ?? '沟通方'} 派发写任务`
+        : `正在向 ${colleague?.id ?? '沟通方'} 发送消息`,
       confirmationMessages: {
-        title: '向同事发送消息',
+        title: isTask ? '向同事派发写任务' : '向同事发送消息',
         message: new vscode.MarkdownString(
-          `将以下内容发送给 **${target}**（对方只会提供信息，不会修改其代码或环境）：\n\n---\n\n${body}${code}`,
+          `将以下内容发送给 **${target}**${scope}：\n\n---\n\n${body}${code}`,
         ),
       },
     };
@@ -182,9 +226,7 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
-      throw new Error(store.config.colleagues.length === 0
-        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
-        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
+      throw new Error(missingTargetError(store, transport, input.to));
     }
     // 停用优先于档案检查：这样报错说的是真正的原因（用户主动停用，而非等待同步）
     if (!colleagueEnabled(colleague)) {
@@ -194,13 +236,8 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持在线，且中继服务端已升级（未升级的中继不下发档案）。`);
     }
 
-    // 熔断：窗口内与同一同事的往来条数达上限时拒绝继续发送，避免两端无人值守地互相追问
-    if (store.isLoopSuspected(colleague.id)) {
-      log(`[tool] send_message 被熔断阻止：${colleague.id} 窗口内往来已达 ${store.recentMessageCount(colleague.id)} 条`);
-      throw new Error(`最近 ${LOOP_WINDOW_MS / 60000} 分钟内与 ${colleague.id} 的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话以免两端无限对话。请把已获得的信息交给本机用户；若确需继续，可由用户在配置界面「维护」里重置熔断计数。`);
-    }
-
-    log(`[tool] send_message → ${colleague.id}（等待=${input.wait_seconds ?? 0}s，片段=${input.snippet ? '有' : '无'}）`);
+    const intent: 'ask' | 'task' = input.intent === 'task' ? 'task' : 'ask';
+    log(`[tool] send_message → ${colleague.id}（意图=${intent}，等待=${input.wait_seconds ?? 0}s，片段=${input.snippet ? '有' : '无'}）`);
     const env = makeEnvelope({
       kind: 'message',
       from: identity.id,
@@ -209,6 +246,7 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       snippet: input.snippet,
       snippetLanguage: input.snippet_language,
       profile: identity,
+      intent,
     });
     const reachable = transport.isOnline(colleague.id);
     await transport.send(env);
@@ -219,17 +257,21 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       text: input.message,
       snippet: input.snippet,
       snippetLanguage: input.snippet_language,
+      intent,
       ts: env.ts,
       done: false,
     });
 
     // 默认等待对方回复（取配置的“等待回复默认超时”），显式传 0 才不等待
     const waitSec = Math.min(Math.max(input.wait_seconds ?? store.config.behavior.waitTimeoutSec, 0), 180);
+    const intentHint = taskIntentHint(intent, input.message);
     if (waitSec <= 0) {
       return json({
         status: reachable ? 'sent' : 'queued',
         request_id: env.id,
         target: colleague.id,
+        intent,
+        ...(intentHint ? { intent_hint: intentHint } : {}),
         hint: reachable
           ? '已按请求不等待回复；之后可用 talk2copilot_wait_reply 获取结果，或查看收件箱。'
           : '对方当前离线，消息已在本机排队，待其上线后自动重发。',
@@ -242,6 +284,8 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
         status: 'pending',
         request_id: env.id,
         target: colleague.id,
+        intent,
+        ...(intentHint ? { intent_hint: intentHint } : {}),
         hint: reachable
           ? `已等待 ${waitSec} 秒仍未收到回复。请先用 talk2copilot_list_colleagues 确认对方是否仍在线：`
             + `在线 → 暂停当前任务的其他步骤，立即连续调用 talk2copilot_wait_reply（request_id="${env.id}"，每次最长 180 秒）继续等待；`
@@ -257,6 +301,8 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
       status: 'ok',
       request_id: env.id,
       target: colleague.id,
+      intent,
+      ...(intentHint ? { intent_hint: intentHint } : {}),
       reply: reply.text,
       reply_snippet: reply.snippet,
       reply_snippet_language: reply.snippetLanguage,
@@ -294,15 +340,6 @@ export class WaitReplyTool implements vscode.LanguageModelTool<WaitReplyInput> {
         status: 'blocked',
         request_id: input.request_id,
         hint: `沟通方 ${record.peerId} 已被停用，不会再有回复。请不要再等待；如需继续，可在配置界面启用该沟通方。`,
-      });
-    }
-    // 熔断后对方不会再被自动唤醒，继续等待必然空转：直接给出终止信号
-    if (store.isLoopSuspected(record.peerId)) {
-      log(`[tool] wait_reply 终止：${record.peerId} 窗口内往来已达 ${store.recentMessageCount(record.peerId)} 条`);
-      return json({
-        status: 'blocked',
-        request_id: input.request_id,
-        hint: `与 ${record.peerId} 在 ${LOOP_WINDOW_MS / 60000} 分钟内的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话，对方不会再回复。请不要再等待或重发，直接把已获得的信息交给本机用户；如需继续，可由用户在配置界面「维护」里重置熔断计数。`,
       });
     }
     if (record.done) {
@@ -397,6 +434,10 @@ export class ReplyMessageTool implements vscode.LanguageModelTool<ReplyInput> {
     });
     await transport.send(env);
     await store.markDone(input.request_id, input.message);
+    // 写任务回报给对方的提示（默认开，可在「行为」页静音）
+    if (original.intent === 'task') {
+      notify(`写任务已回报：${original.peerId}`, truncate(input.message, 160), store.config.behavior.notify !== false);
+    }
     return json({ status: 'ok', request_id: input.request_id, target: original.peerId });
   }
 }
@@ -482,19 +523,13 @@ export class SendFileTool implements vscode.LanguageModelTool<SendFileInput> {
     }
     const colleague = store.findColleague(input.to);
     if (!colleague) {
-      throw new Error(store.config.colleagues.length === 0
-        ? '当前没有可用的 Copilot：请确认本机档案已完善并已连上中继（列表由中继自动登记）。'
-        : `找不到沟通方 “${input.to ?? '（未指定；有多个沟通方时必须显式指定 to）'}”。请先调用 talk2copilot_list_colleagues 查看可用列表（默认只含在线的同事，且不含你自己）。`);
+      throw new Error(missingTargetError(store, this.deps.getTransport(), input.to));
     }
     if (!colleagueEnabled(colleague)) {
       throw new Error(`沟通方 ${colleague.id} 已被停用，不能发送。如需与它通信，请在 Copilot2Copilot 配置界面启用它。`);
     }
     if (!store.hasPeerProfile(colleague)) {
       throw new Error(`尚未同步到同事 ${colleague.id} 的档案（角色/负责内容），暂不能通信。请确认对方已完善自己的档案并保持连接。`);
-    }
-    if (store.isLoopSuspected(colleague.id)) {
-      log(`[tool] send_file 被熔断阻止：${colleague.id} 窗口内往来已达 ${store.recentMessageCount(colleague.id)} 条`);
-      throw new Error(`最近 ${LOOP_WINDOW_MS / 60000} 分钟内与 ${colleague.id} 的往来已达 ${LOOP_MESSAGE_LIMIT} 条，扩展已自动中止该会话以免两端无限对话。请把已获得的信息交给本机用户；若确需继续，可由用户在配置界面「维护」里重置熔断计数。`);
     }
     const filePath = resolveFilePath(input.path);
     log(`[tool] send_file → ${colleague.id}（${filePath}）`);
@@ -542,6 +577,8 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<ListColleagu
         scope: c.scope,
         online: transport?.isOnline(c.id) ?? false,
         profile_ready: store.hasPeerProfile(c),
+        // 我已获该同事授权（对方用户在其卡片上开了「可执行」）：可以给它派发写任务
+        task_authorized: store.getGrantedBy().includes(c.id),
       }));
     const note = colleagues.length > 0
       ? undefined

@@ -48,6 +48,8 @@ export class RelayTransport implements Transport {
 
   async start(): Promise<void> {
     this.running = true;
+    // 先把旧版全局令牌认领到当前中继名下（地址是这里才保证有值的）
+    await this.store.migrateLegacySecrets();
     this.token = await this.store.getToken();
     this.adminToken = await this.store.getAdminToken();
     log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'} 扩展版本=${this.store.extensionVersion || '(未知)'}${this.adminToken ? ' 管理令牌=已设置' : ''}`);
@@ -61,6 +63,8 @@ export class RelayTransport implements Transport {
     this.ws = undefined;
     // 保留 queue：断开后重新连接时会补发，用户不会因为断开而丢消息；
     // 在线/离线名单是上一次会话的缓存，重连后由中继的 presence 重建
+    // 授权名单不能留：中继口径是"断线即收回"，本机跟着清空
+    this.store.setGrantedBy([]);
     this.onlinePeers.clear();
     this.offlinePeers.clear();
     this.failPending('通信通道已停止');
@@ -83,6 +87,22 @@ export class RelayTransport implements Transport {
   private resolveAddress(to: string): string {
     const colleague = this.store.config.colleagues.find(c => c.id === to);
     return colleague?.relayPeerId || to;
+  }
+
+  /** 还在待发队列里的消息 id（断开 / 对方离线时入队，重连后补发） */
+  queuedIds(): string[] {
+    return this.queue.map(env => env.id);
+  }
+
+  /** 取消一条还没发出的排队消息：从队列里摘掉，避免对方上线后又被补发 */
+  cancelQueued(id: string): boolean {
+    const idx = this.queue.findIndex(env => env.id === id);
+    if (idx < 0) {
+      return false;
+    }
+    this.queue.splice(idx, 1);
+    log(`[relay] 已从待发队列取消消息 ${id}（剩余 ${this.queue.length} 条）`);
+    return true;
   }
 
   /** 本机在中继上的 id：一律取档案 id，各窗口因此天然使用不同 id */
@@ -211,6 +231,8 @@ export class RelayTransport implements Transport {
       // 向中继上报自己的档案（to='server' 由中继登记后广播给所有在线设备），中继是档案的权威来源
       log(`[relay] 向中继上报档案（角色=${identity.role || '空'} 负责=${identity.scope || '空'}）`);
       ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: 'server', profile: identity })));
+      // 上报写授权名单（中继内存态，断线即收回；重连后需要重新上报）
+      this.reportTrust(this.store.execGrantees());
       const queued = this.queue.splice(0);
       if (queued.length > 0) {
         log(`[relay] 补发队列消息 ${queued.length} 条`);
@@ -232,6 +254,8 @@ export class RelayTransport implements Transport {
       this.ws = undefined;
       const reasonText = reason.toString();
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reasonText || '(空)'}`);
+      // 授权名单由中继权威下发且"断线即收回"：断开后本机不能继续按旧名单声称对方已授权
+      this.store.setGrantedBy([]);
       this.failPending('与中继的连接已断开');
       if (!this.running) {
         return;
@@ -266,6 +290,25 @@ export class RelayTransport implements Transport {
       return;
     }
     if (!isEnvelope(parsed)) {
+      return;
+    }
+    // 信任授权：既可能是对 report 的应答（按 id 关联），也可能是中继主动下发的"我被谁授权"
+    if (parsed.kind === 'trust') {
+      const resolveTrust = this.pending.get(parsed.id);
+      if (resolveTrust) {
+        this.pending.delete(parsed.id);
+        resolveTrust({ ok: parsed.ok === true, error: parsed.error, env: parsed });
+        return;
+      }
+      if (parsed.op === 'grantedBy') {
+        const list = parsed.payload && typeof parsed.payload === 'object' && Array.isArray(parsed.payload.grantedBy)
+          ? parsed.payload.grantedBy.filter((x): x is string => typeof x === 'string')
+          : [];
+        log(`[relay] 写授权名单更新：被 ${list.length > 0 ? list.join(', ') : '(无)'} 授权`);
+        this.store.setGrantedBy(list);
+        return;
+      }
+      log(`[relay] 收到未匹配的信任消息（op=${parsed.op ?? '(空)'}），已忽略`);
       return;
     }
     // 控制面：房间 / 管理 / 记忆应答按请求 id 关联；都不进消息通道
@@ -363,7 +406,7 @@ export class RelayTransport implements Transport {
    * 中继控制面操作（房间 / 管理）：请求发往 to='server'，中继应答的 id 与请求相同。
    * 未连接或超时（旧版中继不认识该操作）时返回 ok=false，由界面提示。
    */
-  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
+  controlOp(kind: 'room' | 'admin' | 'memory' | 'trust', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.resolve({ ok: false, error: '未连接中继服务器，无法执行该操作' });
     }
@@ -385,6 +428,18 @@ export class RelayTransport implements Transport {
         clearTimeout(timer);
         this.pending.delete(env.id);
         resolve({ ok: false, error: `控制面请求发送失败：${(err as Error).message}` });
+      }
+    });
+  }
+
+  /** 上报写授权名单（连接建立与名单变化时调用）；未连接时静默丢弃，重连后会整体重报 */
+  reportTrust(grantees: string[]): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    void this.controlOp('trust', 'report', { grantees }).then(result => {
+      if (!result.ok) {
+        log(`[relay] 上报写授权名单失败：${result.error ?? '(未知)'}`);
       }
     });
   }

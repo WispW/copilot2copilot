@@ -21,7 +21,8 @@ const { WebSocket } = require('ws');
 const PORT = Number(process.env.MEMORY_TEST_PORT) || 18790;
 const TOKEN = 't-memory';
 const ADMIN = 'a-memory';
-const CLIENT_VERSION = '2026.10.4-test1.1';
+// 扩展版本与中继版本必须一致（-testN 后缀被中继忽略）：直接读 package.json，避免手工同步
+const CLIENT_VERSION = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version;
 const STATE_DIR = mkdtempSync(join(tmpdir(), 't2c-memory-'));
 const MEMORY_FILE = join(STATE_DIR, 'memory.json');
 const ROOMS_FILE = join(STATE_DIR, 'rooms.json');

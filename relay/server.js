@@ -47,9 +47,10 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 /** 中继版本：必须与仓库 package.json 的 version 同步（发版时一起改；install.sh 会比对 /healthz 告警） */
-const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.8';
+const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.9-test11';
 /** 协议号：与扩展 src/protocol.ts 的 PROTOCOL_VERSION 对应，仅供探针展示 */
-const PROTOCOL = 4;
+// 协议 5：新增信任授权通道（成员上报"我授权谁对我执行写操作"，中继下发"我被谁授权"）
+const PROTOCOL = 5;
 /** 管理令牌：为空时管理功能整体不可用（不给任何人管理权限） */
 const ADMIN_TOKEN = process.env.TALK2COPILOT_ADMIN_TOKEN || '';
 /** 封禁名单落盘路径：systemd 单元通过 StateDirectory 提供可写目录 */
@@ -121,6 +122,8 @@ const peers = new Map();
 /** 在线档案目录：id → {id, role, scope}，客户端连上后经 to='server' 上报，中继是档案的权威来源 */
 /** @type {Map<string, {id: string, role: string, scope: string}>} */
 const profiles = new Map();
+/** 写授权：grantor → 被授权的同事集合（内存态；设备离线即收回，中继重启清空） */
+const trustGrants = new Map();
 /** @type {Map<string, object[]>} */
 const offline = new Map();
 /**
@@ -822,6 +825,52 @@ function controlResult(ws, req, kind, ok, payload, error) {
   });
 }
 
+/** 信任授权状态下发：告诉每个在线设备"你被哪些同事授权了写操作" */
+function broadcastTrustState() {
+  for (const [id, ws] of peers) {
+    const grantedBy = [];
+    for (const [grantor, grantees] of trustGrants) {
+      if (grantor !== id && grantees.has(id)) {
+        grantedBy.push(grantor);
+      }
+    }
+    send(ws, {
+      v: 1,
+      kind: 'trust',
+      id: `trust-${++seq}`,
+      from: 'server',
+      to: id,
+      ts: Date.now(),
+      op: 'grantedBy',
+      payload: { grantedBy },
+    });
+  }
+}
+
+/**
+ * 成员侧信任操作：report —— 上报"我授权了哪些同事可以对我执行写操作"（全量覆盖、内存态）。
+ * 授权只在授予者在线期间有效；断线/被踢出即收回，重连后客户端会重新上报。
+ */
+function handleTrustOp(ws, id, env) {
+  const op = typeof env.op === 'string' ? env.op : '';
+  const fail = error => controlResult(ws, env, 'trust', false, undefined, error);
+  switch (op) {
+    case 'report': {
+      const req = env.payload && typeof env.payload === 'object' ? env.payload : {};
+      const list = Array.isArray(req.grantees)
+        ? req.grantees.filter(x => typeof x === 'string' && x && x !== id)
+        : [];
+      trustGrants.set(id, new Set(list));
+      log('info', `${id} 上报写授权名单`, { count: list.length });
+      controlResult(ws, env, 'trust', true, { ok: true });
+      broadcastTrustState();
+      return;
+    }
+    default:
+      fail(`不支持的信任操作「${op || '(空)'}」`);
+  }
+}
+
 /**
  * 成员侧房间操作：list / join / leave。
  * 建房与房间管理（改名 / 改密码 / 归类 / 移出成员 / 解除 / 解散）全部由管理员在 handleAdminOp 中执行。
@@ -1198,6 +1247,8 @@ function handleAdminOp(ws, id, env) {
     if (targetWs) {
       targetWs.close(code, reason);
     }
+    trustGrants.delete(target);
+    broadcastTrustState();
   };
   switch (op) {
     case 'list': {
@@ -1738,6 +1789,7 @@ wss.on('connection', (ws, req) => {
   log('info', `${id} 已上线`, {
     online: peers.size, ip: remoteOf(req), version: clientVersion || '(未上报)', admin: ws.isAdmin === true,
   });
+  broadcastTrustState();
 
   const pending = offline.get(id);
   if (pending && pending.length > 0) {
@@ -1776,6 +1828,10 @@ wss.on('connection', (ws, req) => {
       }
       if (env.kind === 'memory') {
         handleMemoryOp(ws, id, env);
+        return;
+      }
+      if (env.kind === 'trust') {
+        handleTrustOp(ws, id, env);
         return;
       }
       if (env.profile && typeof env.profile === 'object') {
@@ -1852,10 +1908,12 @@ wss.on('connection', (ws, req) => {
       peers.delete(id);
       // 按连接归属删除档案：被接管连接的迟到 close 不会清掉新连接的档案
       profiles.delete(id);
+      trustGrants.delete(id);
       log('info', `${id} 已离线`, { online: peers.size });
       if (!shuttingDown) {
         // 在场成员离线同样会改变房间摘要里的在线成员，需一并下发 room-event
         touchRooms();
+        broadcastTrustState();
       }
     }
   });
