@@ -48,6 +48,8 @@ export class RelayTransport implements Transport {
 
   async start(): Promise<void> {
     this.running = true;
+    // 先把旧版全局令牌认领到当前中继名下（地址是这里才保证有值的）
+    await this.store.migrateLegacySecrets();
     this.token = await this.store.getToken();
     this.adminToken = await this.store.getAdminToken();
     log(`[relay] 启动：地址=${this.store.config.relay.url || '(空)'} 档案id=${this.store.config.identity.id || '(空)'} 令牌=${this.token ? '已设置' : '未设置'} 扩展版本=${this.store.extensionVersion || '(未知)'}${this.adminToken ? ' 管理令牌=已设置' : ''}`);
@@ -61,6 +63,8 @@ export class RelayTransport implements Transport {
     this.ws = undefined;
     // 保留 queue：断开后重新连接时会补发，用户不会因为断开而丢消息；
     // 在线/离线名单是上一次会话的缓存，重连后由中继的 presence 重建
+    // 授权名单不能留：中继口径是"断线即收回"，本机跟着清空
+    this.store.setGrantedBy([]);
     this.onlinePeers.clear();
     this.offlinePeers.clear();
     this.failPending('通信通道已停止');
@@ -250,6 +254,8 @@ export class RelayTransport implements Transport {
       this.ws = undefined;
       const reasonText = reason.toString();
       log(`[relay] 与中继的连接关闭：code=${code} reason=${reasonText || '(空)'}`);
+      // 授权名单由中继权威下发且"断线即收回"：断开后本机不能继续按旧名单声称对方已授权
+      this.store.setGrantedBy([]);
       this.failPending('与中继的连接已断开');
       if (!this.running) {
         return;

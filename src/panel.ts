@@ -369,6 +369,9 @@ export class ConsolePanel {
                 scope: current.scope,
                 relayPeerId: raw.relayPeerId ?? current.relayPeerId,
                 enabled: raw.enabled !== false,
+                // 写授权只由「可执行」开关改动，保存配置时必须原样保留：
+                // 否则任何一次「保存并应用」都会经 normalize() 把授权静默重置为关
+                allowExec: current.allowExec === true,
               };
             }),
           };

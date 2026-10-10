@@ -638,8 +638,11 @@ export class Store {
     }
   }
 
-  /** 旧版本把令牌存在不带地址的键上：启动时复制一份到当前中继名下，之后各中继互不干扰 */
-  private async migrateLegacySecrets(): Promise<void> {
+  /**
+   * 旧版本把令牌存在不带地址的键上：复制一份到当前中继名下后删掉旧键，之后各中继互不干扰。
+   * 启动时调用；连接前（start）再调用一次，覆盖"启动时地址为空、之后才填"的情况。
+   */
+  async migrateLegacySecrets(): Promise<void> {
     if (!normalizeRelayUrl(this.cfg.relay.url)) {
       return;
     }
@@ -650,6 +653,17 @@ export class Store {
       if (legacy && !(await this.context.secrets.get(scopedKey))) {
         await this.context.secrets.store(scopedKey, legacy);
         log(`[store] 已把旧版${kind === 'token' ? '中继令牌' : '管理令牌'}迁移到当前中继名下`);
+      }
+      // 迁移完成后删掉旧键：否则切到另一台中继（它没有分键令牌）时会命中回退，
+      // 把上一台中继的令牌发给它——既鉴权失败，也等于把凭据送给非预期的服务器
+      if (legacy) {
+        try {
+          await this.context.secrets.delete(legacyKey);
+          log(`[store] 已清理旧版${kind === 'token' ? '中继令牌' : '管理令牌'}全局键`);
+        } catch (err) {
+          // 删不掉不影响本次连接（本次已拿到值），下次启动会再试
+          log(`[store] 清理旧版全局键失败：${String(err)}`);
+        }
       }
     }
   }

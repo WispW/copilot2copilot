@@ -29,7 +29,10 @@ export function BehaviorPage({ snap }: { snap: Snapshot }) {
             onInput={e => updateDraft({ historyLimit: Number(e.currentTarget.value) || 200 })}
           />
         </label>
-        <Hint>收到同事的消息或回复时，会直接触发本机 Copilot 对话进行处理（不再弹出通知）。改动后需点右上角「保存并应用」。</Hint>
+        <Hint>
+          同事消息是否<strong>自动</strong>交给本机 Copilot 由顶部「无人值守」开关决定：<strong>默认关闭</strong>，
+          此时消息只进收件箱（可逐条「交给 Copilot」）；打开后才自动注入对话。改动后需点右上角「保存并应用」。
+        </Hint>
         <label class="row" title="写任务开始 / 结束时用系统通知提醒（关闭只是静音，留痕不受影响）">
           <input
             type="checkbox"
