@@ -47,7 +47,7 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 /** 中继版本：必须与仓库 package.json 的 version 同步（发版时一起改；install.sh 会比对 /healthz 告警） */
-const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.9-test11';
+const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.10';
 /** 协议号：与扩展 src/protocol.ts 的 PROTOCOL_VERSION 对应，仅供探针展示 */
 // 协议 5：新增信任授权通道（成员上报"我授权谁对我执行写操作"，中继下发"我被谁授权"）
 const PROTOCOL = 5;
