@@ -85,6 +85,22 @@ export class RelayTransport implements Transport {
     return colleague?.relayPeerId || to;
   }
 
+  /** 还在待发队列里的消息 id（断开 / 对方离线时入队，重连后补发） */
+  queuedIds(): string[] {
+    return this.queue.map(env => env.id);
+  }
+
+  /** 取消一条还没发出的排队消息：从队列里摘掉，避免对方上线后又被补发 */
+  cancelQueued(id: string): boolean {
+    const idx = this.queue.findIndex(env => env.id === id);
+    if (idx < 0) {
+      return false;
+    }
+    this.queue.splice(idx, 1);
+    log(`[relay] 已从待发队列取消消息 ${id}（剩余 ${this.queue.length} 条）`);
+    return true;
+  }
+
   /** 本机在中继上的 id：一律取档案 id，各窗口因此天然使用不同 id */
   private myRelayId(): string {
     return this.store.config.identity.id;
@@ -211,6 +227,8 @@ export class RelayTransport implements Transport {
       // 向中继上报自己的档案（to='server' 由中继登记后广播给所有在线设备），中继是档案的权威来源
       log(`[relay] 向中继上报档案（角色=${identity.role || '空'} 负责=${identity.scope || '空'}）`);
       ws.send(JSON.stringify(makeEnvelope({ kind: 'hello', from: this.myRelayId(), to: 'server', profile: identity })));
+      // 上报写授权名单（中继内存态，断线即收回；重连后需要重新上报）
+      this.reportTrust(this.store.execGrantees());
       const queued = this.queue.splice(0);
       if (queued.length > 0) {
         log(`[relay] 补发队列消息 ${queued.length} 条`);
@@ -266,6 +284,25 @@ export class RelayTransport implements Transport {
       return;
     }
     if (!isEnvelope(parsed)) {
+      return;
+    }
+    // 信任授权：既可能是对 report 的应答（按 id 关联），也可能是中继主动下发的"我被谁授权"
+    if (parsed.kind === 'trust') {
+      const resolveTrust = this.pending.get(parsed.id);
+      if (resolveTrust) {
+        this.pending.delete(parsed.id);
+        resolveTrust({ ok: parsed.ok === true, error: parsed.error, env: parsed });
+        return;
+      }
+      if (parsed.op === 'grantedBy') {
+        const list = parsed.payload && typeof parsed.payload === 'object' && Array.isArray(parsed.payload.grantedBy)
+          ? parsed.payload.grantedBy.filter((x): x is string => typeof x === 'string')
+          : [];
+        log(`[relay] 写授权名单更新：被 ${list.length > 0 ? list.join(', ') : '(无)'} 授权`);
+        this.store.setGrantedBy(list);
+        return;
+      }
+      log(`[relay] 收到未匹配的信任消息（op=${parsed.op ?? '(空)'}），已忽略`);
       return;
     }
     // 控制面：房间 / 管理 / 记忆应答按请求 id 关联；都不进消息通道
@@ -363,7 +400,7 @@ export class RelayTransport implements Transport {
    * 中继控制面操作（房间 / 管理）：请求发往 to='server'，中继应答的 id 与请求相同。
    * 未连接或超时（旧版中继不认识该操作）时返回 ok=false，由界面提示。
    */
-  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
+  controlOp(kind: 'room' | 'admin' | 'memory' | 'trust', op: string, payload?: Record<string, unknown>): Promise<ControlResult> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       return Promise.resolve({ ok: false, error: '未连接中继服务器，无法执行该操作' });
     }
@@ -385,6 +422,18 @@ export class RelayTransport implements Transport {
         clearTimeout(timer);
         this.pending.delete(env.id);
         resolve({ ok: false, error: `控制面请求发送失败：${(err as Error).message}` });
+      }
+    });
+  }
+
+  /** 上报写授权名单（连接建立与名单变化时调用）；未连接时静默丢弃，重连后会整体重报 */
+  reportTrust(grantees: string[]): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    void this.controlOp('trust', 'report', { grantees }).then(result => {
+      if (!result.ok) {
+        log(`[relay] 上报写授权名单失败：${result.error ?? '(未知)'}`);
       }
     });
   }

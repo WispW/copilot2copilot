@@ -76,6 +76,7 @@ export function App() {
   const connecting = status.state === 'connecting';
   const online = status.state === 'online';
   const unread = state.messages.filter(m => m.direction === 'in' && !m.done).length;
+  const execGrantCount = state.config.colleagues.filter(c => c.allowExec === true).length;
 
   const save = (): void => {
     const payload = savePayload();
@@ -93,7 +94,23 @@ export function App() {
           <span class={`dot ${status.state}`}></span>
           <b>{STATE_LABEL[status.state] ?? status.state}</b>
           <span class="hint">{status.detail}</span>
-          {unread > 0 && <span class="badge">{unread} 条未回复</span>}
+          {unread > 0 && <span class="badge danger">{unread} 条未回复</span>}
+          <label class="switch" title="开启后，收到同事消息自动交给本机 Copilot 处理；关闭（默认）只进收件箱，由你手动处理">
+            <input
+              type="checkbox"
+              checked={state.config.behavior.unattended === true}
+              onChange={e => post({ type: 'setUnattended', value: e.currentTarget.checked })}
+            />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+            无人值守
+          </label>
+          {execGrantCount > 0 && (
+            <button
+              class="badge warn"
+              title="已允许这些同事要求本机 Copilot 执行写操作；点击到列表逐人管理"
+              onClick={() => goto('peers')}
+            >可执行授权 · {execGrantCount} 位</button>
+          )}
         </div>
         <div class="actions">
           {online || connecting
@@ -129,7 +146,7 @@ export function App() {
             <button class={t.id === tab ? 'active' : ''} key={t.id} onClick={() => goto(t.id)}>
               <span class="label">{t.label}</span>
               {t.id === 'peers' && state.onlineIds.length > 0 && <span class="count">{state.onlineIds.length}</span>}
-              {t.id === 'inbox' && unread > 0 && <span class="count">{unread}</span>}
+              {t.id === 'inbox' && unread > 0 && <span class="count alert">{unread}</span>}
             </button>
           ))}
           <div class="side-foot">

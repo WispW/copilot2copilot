@@ -62,6 +62,65 @@ header {
   min-width: 0;
 }
 
+/* 滑动开关（顶部「无人值守」）：真实 input 藏起来,用轨道 + 滑块呈现状态 */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--vscode-input-background, rgba(127, 127, 127, 0.18));
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground, rgba(127, 127, 127, 0.9));
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.switch > input:checked + .switch-track {
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-button-background, #0e639c);
+}
+
+.switch > input:checked + .switch-track .switch-thumb {
+  transform: translateX(12px);
+  background: var(--vscode-button-foreground, #ffffff);
+}
+
+.switch > input:focus-visible + .switch-track {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 .actions {
   display: flex;
   align-items: center;
@@ -129,6 +188,12 @@ nav.side .count {
   border-radius: 8px;
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
+}
+
+/* 有待处理消息时用红点提示（与状态行的未回复标记同一语义） */
+nav.side .count.alert {
+  background: rgba(248, 81, 73, 0.18);
+  color: var(--vscode-errorForeground, #f85149);
 }
 
 nav.side .side-foot {
@@ -467,6 +532,11 @@ code {
   color: var(--vscode-editorWarning-foreground, #d29922);
 }
 
+.badge.danger {
+  background: rgba(248, 81, 73, 0.18);
+  color: var(--vscode-errorForeground, #f85149);
+}
+
 /* ---------- 卡片 ---------- */
 
 .card {
@@ -682,6 +752,102 @@ code {
 .bubble .file,
 .bubble pre.body {
   margin-top: 6px;
+}
+
+/* 写任务:特殊卡片样式(左侧强调条 + 标题行),与普通问答区分 */
+.bubble.task {
+  border-left: 3px solid var(--vscode-editorWarning-foreground, #d29922);
+}
+
+/* ---------- 收件箱:会话列表(微信式) ---------- */
+
+.relay-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.relay-list .group-title {
+  margin: 0;
+}
+
+.relay-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--card-bg);
+  font-size: 12px;
+}
+
+.relay-url {
+  font-family: var(--vscode-editor-font-family, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46%;
+}
+
+.conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.conversation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--card-bg);
+  color: var(--vscode-foreground);
+  font-size: 13px;
+}
+
+.conversation:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* 行主体:点进会话看气泡(用 button 保证键盘可达;行内的动作按钮是它的兄弟节点) */
+.conversation .conversation-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  background-image: none;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation .conversation-main:hover {
+  background: none;
+}
+
+.conversation-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conversation-summary {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  word-break: break-word;
 }
 
 .msg-head {

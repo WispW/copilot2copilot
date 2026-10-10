@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import { log, showLogs } from './logger';
 import { AdminMemoryFilters, AdminMemoryRoomStats, PanelState } from './panelTypes';
 import { ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
-import { AppConfig, ColleagueConfig, LOOP_MESSAGE_LIMIT, LOOP_WINDOW_MS, Store } from './store';
+import { AppConfig, ColleagueConfig, HistoryItem, Store } from './store';
 import { ControlResult, TransportStatus } from './transport/types';
 
 interface PanelDeps {
@@ -15,6 +15,12 @@ interface PanelDeps {
   disconnect(): Promise<void>;
   control(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
   refreshAdmin(): Promise<void>;
+  /** 收件箱「交给 Copilot」：无视无人值守开关，把该条记录注入当前对话 */
+  manualInject(item: HistoryItem): Promise<void>;
+  /** 还在本地待发队列里的消息 id（收件箱显示「取消排队」） */
+  queuedIds(): string[];
+  /** 取消一条还没发出的排队消息 */
+  cancelQueued(id: string): boolean;
 }
 
 /** CSV 单元格转义：含引号/逗号/换行的内容整体加引号并转义内部引号 */
@@ -137,11 +143,13 @@ export class ConsolePanel {
       onlineIds: this.deps.getOnlineIds(),
       identityMissing: this.store.missingIdentityFields(),
       rooms: this.store.getRooms(),
+      execGrantedBy: this.store.getGrantedBy(),
       categories: this.store.getCategories(),
       admin: { tokenSet: this.store.hasAdminToken(), ...this.store.getAdminState() },
       relayInfo: this.store.getRelayInfo(),
       extensionVersion: this.store.extensionVersion,
-      loopGuard: { windowMs: LOOP_WINDOW_MS, limit: LOOP_MESSAGE_LIMIT },
+      relays: this.store.getRelays(),
+      queuedIds: this.deps.queuedIds(),
     };
   }
 
@@ -297,7 +305,11 @@ export class ConsolePanel {
       token?: string;
       adminToken?: string;
       peerId?: string;
+      id?: string;
+      url?: string;
       enabled?: boolean;
+      allow?: boolean;
+      value?: boolean;
       identity?: ColleagueProfile;
       op?: string;
       payload?: Record<string, unknown>;
@@ -370,6 +382,8 @@ export class ConsolePanel {
           await this.store.setAdminToken(m.adminToken.trim());
           log('[panel] 已保存中继管理令牌');
         }
+        // 保存即记入历史：以后在「中继服务器」列表里一键切回
+        await this.store.rememberRelay(this.store.config.relay.url);
         await this.deps.restart();
         this.postState(true);
         void vscode.window.showInformationMessage(
@@ -465,6 +479,16 @@ export class ConsolePanel {
       case 'clearHistory':
         await this.store.clearMessages();
         break;
+      case 'manualInject': {
+        const item: HistoryItem | undefined = typeof m.id === 'string' ? this.store.findMessage(m.id) : undefined;
+        if (!item) {
+          log(`[panel] 交给 Copilot：找不到记录 ${String(m.id)}`);
+          break;
+        }
+        log(`[panel] 交给 Copilot：注入记录 ${item.id}（来自 ${item.peerId}）`);
+        await this.deps.manualInject(item);
+        break;
+      }
       case 'openFilesDir': {
         const dir = this.store.filesDir();
         log(`[panel] 打开文件收件目录 ${dir}`);
@@ -478,19 +502,77 @@ export class ConsolePanel {
         }
         break;
       }
-      case 'resetLoopGuard': {
-        this.store.resetLoopGuard();
-        log('[panel] 已重置熔断计数');
-        void vscode.window.showInformationMessage('Copilot2Copilot：熔断计数已重置，可以与同事继续通信。');
-        this.postState();
-        break;
-      }
       case 'toggleColleague': {
         if (typeof m.peerId === 'string' && m.peerId) {
           await this.store.setColleagueEnabled(m.peerId, m.enabled === true);
           log(`[panel] ${m.enabled === true ? '启用' : '停用'}沟通方 ${m.peerId}`);
           this.postState();
         }
+        break;
+      }
+      case 'toggleExecGrant': {
+        if (typeof m.peerId === 'string' && m.peerId) {
+          await this.store.setColleagueExecGrant(m.peerId, m.allow === true);
+          log(`[panel] ${m.allow === true ? '允许' : '取消'} ${m.peerId} 的写授权`);
+          this.postState();
+        }
+        break;
+      }
+      case 'setUnattended': {
+        await this.store.setUnattended(m.value === true);
+        log(`[panel] 无人值守${m.value === true ? '已开启' : '已关闭'}`);
+        this.postState();
+        break;
+      }
+      case 'setNotify': {
+        await this.store.setNotify(m.value === true);
+        log(`[panel] 系统通知${m.value === true ? '已开启' : '已静音'}`);
+        this.postState();
+        break;
+      }
+      case 'useRelay': {
+        const url = String(m.url ?? '');
+        if (!url) {
+          break;
+        }
+        await this.store.setRelayUrl(url);
+        await this.store.rememberRelay(url);
+        log(`[panel] 切换到历史中继 ${url}`);
+        await this.deps.restart();
+        this.postState(true);
+        void vscode.window.showInformationMessage(`Copilot2Copilot：已切换到中继 ${url}（令牌按中继分别取用）`);
+        break;
+      }
+      case 'forgetRelay': {
+        const url = String(m.url ?? '');
+        if (!url) {
+          break;
+        }
+        await this.store.forgetRelay(url);
+        log(`[panel] 已删除历史中继 ${url}（含它保存的令牌）`);
+        this.postState();
+        void vscode.window.showInformationMessage(`Copilot2Copilot：已从历史中删除 ${url}，它保存的令牌也一并清除`);
+        break;
+      }
+      case 'cancelSend': {
+        const id = String(m.id ?? '');
+        if (!id) {
+          break;
+        }
+        if (this.deps.cancelQueued(id)) {
+          await this.store.markCanceled(id);
+          log(`[panel] 已取消排队消息 ${id}`);
+          void vscode.window.showInformationMessage('Copilot2Copilot：已取消这条待发送的消息，对方上线后不会再补发。');
+        } else {
+          void vscode.window.showWarningMessage('Copilot2Copilot：这条消息已经发出去了，无法取消。');
+        }
+        this.postState();
+        break;
+      }
+      case 'cancelAllExecGrants': {
+        const count = await this.store.cancelAllExecGrants();
+        log(`[panel] 已取消全部写授权（${count} 位）`);
+        this.postState();
         break;
       }
       case 'saveTemplate': {

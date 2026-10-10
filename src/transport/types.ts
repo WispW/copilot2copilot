@@ -26,10 +26,16 @@ export interface Transport {
   stop(): Promise<void>;
   /** 发送一条消息；连接不可用时入本地队列稍后重试 */
   send(env: MessageEnvelope): Promise<void>;
+  /** 还在本地待发队列里的消息 id（界面据此显示「取消排队」） */
+  queuedIds(): string[];
+  /** 取消一条还没发出的排队消息；已经发出或不在队列里返回 false */
+  cancelQueued(id: string): boolean;
   /** 某个同事当前是否可达 */
   isOnline(peerId: string): boolean;
   /** 退出前尽力向所有沟通方发出下线通告（同步、不等待） */
   sendOfflineNotice(): void;
-  /** 中继控制面操作（房间 / 管理 / 记忆）；通道未启动、无中继或服务端过旧（无响应）时返回 ok=false 与原因 */
-  controlOp(kind: 'room' | 'admin' | 'memory', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  /** 中继控制面操作（房间 / 管理 / 记忆 / 信任授权）；通道未启动、无中继或服务端过旧（无响应）时返回 ok=false 与原因 */
+  controlOp(kind: 'room' | 'admin' | 'memory' | 'trust', op: string, payload?: Record<string, unknown>): Promise<ControlResult>;
+  /** 上报"我授权了哪些同事可以对我执行写操作"（中继内存态；连接建立与名单变化时调用，未连接时静默丢弃） */
+  reportTrust(grantees: string[]): void;
 }

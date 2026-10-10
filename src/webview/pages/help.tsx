@@ -2,7 +2,6 @@ import { Hint, Section } from '../components';
 import type { Snapshot } from '../state';
 
 export function HelpPage({ snap }: { snap: Snapshot }) {
-  const loop = snap.state?.loopGuard ?? { windowMs: 300_000, limit: 10 };
   return (
     <div class="page">
       <Section title="连接与重连">
@@ -19,6 +18,18 @@ export function HelpPage({ snap }: { snap: Snapshot }) {
           中继只是转发通道，双方的消息直达对方本机 Copilot 对话。通信约定为<strong>只读查询</strong>：
           可以问信息、请对方解释代码事实，但不能要求对方修改代码 / 文件 / 配置，也不能要求执行有副作用的操作
           （写入、安装、部署、重启等）。该约定随消息一起注入对方 Copilot。
+        </Hint>
+        <Hint>
+          在「Copilot 列表」给某位同事打开<strong>「可执行」</strong>后，该同事可以用写任务（intent = task）请求本机执行修改；
+          授权逐同事、默认关闭、可随时撤销（「行为」页可一键全部取消）。红线操作（删除、装依赖、工作区外路径）即使授权也会被拒绝。
+        </Hint>
+        <Hint>
+          身份按<strong>工作区</strong>保存：换一个工作区就是换一个 id，旧身份上开过的「可执行」不会跟着继承（新身份默认全关），
+          需要在新的身份上重新授权；对方列表里也会多出一个属于该工作区的条目。
+        </Hint>
+        <Hint>
+          顶部「无人值守」默认关闭：关闭时同事消息只进收件箱、不会自动唤醒本机 Copilot（可逐条「交给 Copilot」处理），
+          打开后才会自动注入对话并按上面的授权规则处理。
         </Hint>
       </Section>
 
@@ -64,11 +75,7 @@ export function HelpPage({ snap }: { snap: Snapshot }) {
         </Hint>
       </Section>
 
-      <Section title="熔断与文件">
-        <Hint>
-          与同一位同事在 {loop.windowMs / 60000} 分钟内的往来达到 {loop.limit} 条会自动中止，避免两端 Copilot 无限对话；
-          可在「行为」页重置计数，或等窗口滑过后自动恢复。
-        </Hint>
+      <Section title="文件交接">
         <Hint>
           文件交接走独立通道（不经双方模型），512 KiB 分块、逐块确认、整文件 sha256 校验，单文件上限 64 MiB；
           收下的文件放在扩展私有目录（「收件箱」页可打开），不进入工作区。发送要求对方同时在线，不会排队补发。

@@ -144,6 +144,7 @@ export function savePayload(): { config: AppConfig; identity: WorkspaceIdentity;
     ...current.config,
     relay: { url: snapshot.draft.relayUrl.trim(), autoConnect: snapshot.draft.autoConnect },
     behavior: {
+      ...current.config.behavior,
       waitTimeoutSec: snapshot.draft.waitTimeoutSec,
       historyLimit: snapshot.draft.historyLimit,
     },

@@ -16,7 +16,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log('扩展已激活');
   const store = new Store(context);
   const waiters = new ReplyWaiter();
-  const injector = new Injector(store, waiters, context.extensionUri);
+  const injector = new Injector(
+    store,
+    waiters,
+    context.extensionUri,
+    env => {
+      const transport = currentTransport;
+      if (!transport) {
+        return Promise.reject(new Error('尚未连接中继'));
+      }
+      return transport.send(env);
+    },
+  );
   const fileHub = new FileHub(store, () => currentTransport, arrival => injector.injectFile(arrival));
   fileHub.cleanupStaleTransferFiles();
   let status: TransportStatus = { state: 'stopped', detail: '未启动' };
@@ -36,6 +47,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const statusBar = new StatusBar(store, getOnlineIds);
   context.subscriptions.push(statusBar);
 
+  /**
+   * 写授权名单变化时上报中继（避免任意配置变更都重发；重连时由传输层在 onopen 自动整体重报）。
+   * 初始哨兵与任何名单串都不同：取消最后一个授权时也能正确触发一次上报。
+   */
+  let lastTrustKey = '\u0000';
+  const reportTrustIfChanged = (): void => {
+    const list = store.execGrantees().sort();
+    const key = list.join(',');
+    if (key === lastTrustKey) {
+      return;
+    }
+    lastTrustKey = key;
+    currentTransport?.reportTrust(list);
+  };
+
   /** 刷新管理员视角的在线设备与封禁名单（管理令牌未通过时清空并标记未验证） */
   const refreshAdmin = async (): Promise<void> => {
     const transport = currentTransport;
@@ -54,6 +80,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const restart = async (): Promise<void> => {
     log('重启通道：中继模式');
+    // 每次连接都记一笔历史（启动自动连接、点「连接」、切换中继都走这里）
+    await store.rememberRelay(store.config.relay.url);
     transportDisposables.forEach(d => d.dispose());
     transportDisposables = [];
     await currentTransport?.stop();
@@ -118,6 +146,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ? currentTransport.controlOp(kind, op, payload)
       : Promise.resolve({ ok: false, error: '尚未连接中继，请在上方点「连接」后再试' }),
     refreshAdmin,
+    manualInject: item => injector.forceInject(item),
+    queuedIds: () => currentTransport?.queuedIds() ?? [],
+    cancelQueued: id => currentTransport?.cancelQueued(id) ?? false,
   });
 
   const deps: ToolDeps = { store, waiters, getTransport: () => currentTransport, fileHub };
@@ -134,7 +165,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await disconnect();
       void vscode.window.showInformationMessage('Copilot2Copilot：已断开中继连接（可在配置界面点「连接」恢复）。');
     }),
-    store.onDidChange(() => statusBar.update(status)),
+    store.onDidChange(() => {
+      statusBar.update(status);
+      reportTrustIfChanged();
+    }),
     new vscode.Disposable(() => {
       void currentTransport?.stop();
       currentTransport = undefined;

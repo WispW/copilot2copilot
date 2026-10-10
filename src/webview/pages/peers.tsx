@@ -40,6 +40,14 @@ export function PeersPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
               <span class={profileReady ? 'badge ok' : 'badge warn'}>{profileReady ? '档案已同步' : '档案未同步'}</span>
               {disabled && <span class="badge">已停用</span>}
               <span class="grow"></span>
+              <label class="row" title="允许该同事要求本机 Copilot 执行写操作（工作区内文件与测试/构建；删除、装依赖等仍会拒绝）">
+                <input
+                  type="checkbox"
+                  checked={c.allowExec === true}
+                  onChange={e => post({ type: 'toggleExecGrant', peerId: c.id, allow: e.currentTarget.checked })}
+                />
+                可执行
+              </label>
               <button
                 class={disabled ? 'small accent' : 'small danger'}
                 title="停用后不参与通信，也不会出现在模型可见名单里"

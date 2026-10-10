@@ -1,4 +1,4 @@
-import { CopyButton, Hint, Section } from '../components';
+import { ConfirmButton, CopyButton, Hint, Section } from '../components';
 import { post } from '../api';
 import { updateDraft, updateIdentity, updateTokens, type Snapshot } from '../state';
 
@@ -60,6 +60,36 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
             onInput={e => updateDraft({ relayUrl: e.currentTarget.value })}
           />
         </label>
+        {state.relays.length > 0 && (
+          <div class="relay-list">
+            <p class="group-title">历史中继</p>
+            {state.relays.map(r => {
+              // 与扩展侧同一套归一化口径：去空白、去结尾斜杠、忽略大小写
+              const key = (u: string): string => u.trim().replace(/\/+$/, '').toLowerCase();
+              const current = key(r.url) === key(state.config.relay.url);
+              return (
+                <div class="relay-item" key={r.url}>
+                  <span class="relay-url" title={r.url}>{r.url}</span>
+                  <span class="hint">{new Date(r.lastUsedAt).toLocaleString()}</span>
+                  <span class="grow"></span>
+                  {current
+                    ? <span class="badge ok">当前</span>
+                    : (
+                      <button class="small" onClick={() => post({ type: 'useRelay', url: r.url })}>
+                        使用
+                      </button>
+                    )}
+                  <ConfirmButton
+                    label="删除"
+                    confirmLabel="确认删除？"
+                    danger
+                    onConfirm={() => post({ type: 'forgetRelay', url: r.url })}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
         <label>
           中继令牌（可选）
           <input
@@ -87,7 +117,8 @@ export function ConnectPage({ snap }: { snap: Snapshot }) {
           启动 VS Code 时自动连接一次
         </label>
         <Hint>
-          令牌保存在系统密钥库（SecretStorage），不会写进配置文件；改动后需点右上角「保存并应用」。
+          令牌保存在系统密钥库（SecretStorage），不会写进配置文件，并且<strong>按中继分别保存</strong>——
+          切到历史中继后留空即可沿用它的令牌；改动后需点右上角「保存并应用」。
           管理令牌用于获得中继管理权限（查看 / 踢出 / 封禁在线设备，并管理所有房间与分类）。
         </Hint>
       </Section>

@@ -1,5 +1,5 @@
 import type { AdminDevice, ColleagueProfile, MemoryEntry, RoomCategory, RoomSummary } from './protocol';
-import type { AppConfig, HistoryItem, WorkspaceIdentity } from './store';
+import type { AppConfig, HistoryItem, RelayRecord, WorkspaceIdentity } from './store';
 import type { TransportStatus } from './transport/types';
 
 /** 主界面状态快照：扩展推给 webview 的唯一数据源（两侧共用同一份类型定义） */
@@ -18,16 +18,20 @@ export interface PanelState {
   identityMissing: string[];
   /** 房间列表（中继下发）：列表全员可见（凭密码加入），未加入房间时看不到其他设备 */
   rooms: RoomSummary[];
+  /** 我被哪些同事授权可以派发写任务（中继下发，内存态；用于列表卡片"可执行"标志） */
+  execGrantedBy: string[];
   /** 房间分类（中继下发，仅分组与排序） */
   categories: RoomCategory[];
   /** 管理员面板：令牌是否已设置、是否验证通过、在线设备与封禁名单 */
   admin: { tokenSet: boolean; verified: boolean; devices: AdminDevice[]; bans: string[] };
   /** 中继运行版本与协议号（连接成功后获取，供版本对照） */
   relayInfo: { version: string; protocol: number };
+  /** 历史中继（最近使用在前；「连接」页可切换与删除） */
+  relays: RelayRecord[];
+  /** 还在本地待发队列里的消息 id（收件箱据此显示「取消排队」） */
+  queuedIds: string[];
   /** 本扩展版本（版本门禁要求与中继一致） */
   extensionVersion: string;
-  /** 熔断阈值（供「行为 / 帮助」页说明文案使用，避免界面另抄一份常量） */
-  loopGuard: { windowMs: number; limit: number };
 }
 
 /** 扩展 → webview：状态推送 */
@@ -103,7 +107,14 @@ export type WebviewMessage =
   | { type: 'refreshAdmin' }
   | { type: 'clearHistory' }
   | { type: 'openFilesDir' }
-  | { type: 'resetLoopGuard' }
+  | { type: 'toggleExecGrant'; peerId: string; allow: boolean }
+  | { type: 'setUnattended'; value: boolean }
+  | { type: 'cancelAllExecGrants' }
+  | { type: 'manualInject'; id: string }
+  | { type: 'setNotify'; value: boolean }
+  | { type: 'useRelay'; url: string }
+  | { type: 'forgetRelay'; url: string }
+  | { type: 'cancelSend'; id: string }
   | { type: 'toggleColleague'; peerId: string; enabled: boolean }
   | { type: 'saveTemplate' }
   | { type: 'memoryList'; roomId: string; cursor?: string; includeDeleted?: boolean }
