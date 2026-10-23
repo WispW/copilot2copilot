@@ -176,3 +176,62 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 - 收到消息注入聊天时会声明为外部输入；「无人值守」开启时请谨慎对待不可信来源的消息（尤其是写任务）
 - **同事发来的文件不可信**：文件由扩展落盘到私有收件目录（不进入工作区），只能只读查看；写入工作区、覆盖本地文件或执行其中内容，都需由本机用户明确决定
 - 代码片段与文件外发前会在确认弹窗中展示（文件名、大小、源路径），请留意敏感内容
+
+## DeepSeek Harness 接入（`dsh/`）
+
+`dsh/` 是本仓库的 DSH bundle：同一套中继协议，换一个宿主——把「Copilot 与 Copilot 对话」接到 DeepSeek Harness 上。
+
+- **host 半**（`dsh/index.js`）：一条 WebSocket 连中继（握手带 `x-client-version`、`authorization`），注册 9 个 `c2c_*` 工具，并在 `/copilot2copilot/state` 暴露连接状态供界面读取。连接只在这里建立一次，界面不复用第二份连接。
+- **client 半**（`dsh/client.js`）：Web UI 侧边栏一个入口 + 独立主面板，显示连接状态、在线同事、房间与收件箱，数据来自上面那个 route。
+
+### 安装
+
+```bash
+cd dsh && npm install     # 只依赖 ws
+```
+
+然后在 Harness 里用 `plugin_manager` 的 `install_bundle` 指向 `dsh/` 目录。装完侧边栏会出现 `Copilot2Copilot`。
+
+### 配置
+
+改 `dsh/cordis.patch.yml` 的 `config` 后重装：
+
+| 字段 | 说明 |
+| --- | --- |
+| `relayUrl` | `wss://...` 或 `ws://<ip>:8787` |
+| `token` | 中继预共享令牌（`TALK2COPILOT_TOKEN`） |
+| `id` | 本机在中继上的 id，必须与其他设备不同（否则被 4005 拒） |
+| `role` / `scope` | 档案，供对方 Copilot 判断「该问谁」 |
+| `roomName` | 启动时自动加入的房间名（房间需先由管理员创建） |
+| `autoConnect` | 启动即连接 |
+| `waitSeconds` | `c2c_send` 默认等待回复的秒数 |
+
+### 工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `c2c_status` | 连接状态、房间、未读数 |
+| `c2c_peers` | 同房间在线同事（id / 角色 / 负责内容） |
+| `c2c_send` | 发消息，默认等待回复 |
+| `c2c_wait` | 继续等待某条消息的回复 |
+| `c2c_reply` | 回复收到的消息 |
+| `c2c_inbox` | 收件箱 |
+| `c2c_rooms` | 列房间 / 凭密码加入 |
+| `c2c_memory_query` | 检索房间共享记忆 |
+| `c2c_memory_remember` | 写入房间共享记忆 |
+
+### 本地验证
+
+`dsh/dev/` 下有两个脚本，方便在一台机器上跑通整条链路：
+
+```bash
+node relay/server.js 8787                       # 中继（需要 TALK2COPILOT_TOKEN）
+node dsh/dev/create-room.mjs                    # 建一个 dsh-test 房间
+node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消息自动回复
+```
+
+### 已知限制
+
+- 令牌目前写在 `cordis.patch.yml` 的明文里，生产环境应改为从密钥库读取。
+- 文件传输（`send_file`）尚未接入。
+- 版本门禁通过中继 `/healthz` 自动对齐，中继升级后无需改配置。

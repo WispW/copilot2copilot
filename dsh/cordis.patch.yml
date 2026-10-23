@@ -1,0 +1,12 @@
+- insert:
+    - id: copilot2copilot-dsh
+      name: '@local/copilot2copilot-dsh'
+      config:
+        relayUrl: 'ws://127.0.0.1:8787'
+        token: 'dshdevtoken'
+        id: 'dsh-dev'
+        role: 'DSH 助手'
+        scope: '本地开发机 · G:\ai'
+        roomName: 'dsh-test'
+        autoConnect: true
+        waitSeconds: 30
