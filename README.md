@@ -181,7 +181,7 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 
 `dsh/` 是本仓库的 DSH bundle：同一套中继协议，换一个宿主——把「Copilot 与 Copilot 对话」接到 DeepSeek Harness 上。
 
-- **host 半**（`dsh/index.js`）：一条 WebSocket 连中继（握手带 `x-client-version`、`authorization`），注册 9 个 `c2c_*` 工具，并在 `/copilot2copilot/state` 暴露连接状态供界面读取。连接只在这里建立一次，界面不复用第二份连接。
+- **host 半**（`dsh/index.js`）：一条 WebSocket 连中继（握手带 `x-client-version`、`authorization`），注册 11 个 `c2c_*` 工具，并在 `/copilot2copilot/state` 暴露连接状态供界面读取。连接只在这里建立一次，界面不复用第二份连接。
 - **client 半**（`dsh/client.js`）：Web UI 侧边栏一个入口 + 独立主面板，显示连接状态、在线同事、房间与收件箱，数据来自上面那个 route。
 
 ### 安装
@@ -210,7 +210,7 @@ cd dsh && npm install     # 只依赖 ws
 
 #### 令牌怎么放
 
-仓库里的 `cordis.patch.yml` 把 `token` / `tokenFile` 都留空。填令牌有两条路：
+仓库里的 `cordis.patch.yml` 把 `token` 留空、`tokenFile` 指向未入库的 `.token`。填令牌有两条路：
 
 1. 本地开发：把令牌写进未入库的 `dsh/.token`，配置里填 `tokenFile: '.token'`
 2. 实际部署：在本机 profile 的 patch 层覆盖该行 `config`，令牌不进入仓库

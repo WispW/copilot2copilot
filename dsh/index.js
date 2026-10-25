@@ -8,6 +8,7 @@
 import {
   promises as fsp,
   closeSync,
+  createReadStream,
   constants as FS_CONSTANTS,
   copyFileSync,
   linkSync,
@@ -111,7 +112,7 @@ export function apply(ctx, config = {}) {
   });
 
   function recountUnread() {
-    state.unread = state.inbox.filter((item) => item.kind === 'message' && !item.read).length;
+    state.unread = state.inbox.filter((item) => item.kind !== 'reply' && !item.read).length;
   }
 
   function setStatus(status, detail) {
@@ -202,9 +203,20 @@ export function apply(ctx, config = {}) {
   const incomingFiles = new Map();
   const outgoingFiles = new Map();
 
-  function defaultFilesDir() {
+  function channelDir() {
     const home = process.env.DSH_HOME || join(homedir(), '.dsh');
-    return join(home, 'copilot2copilot', 'files');
+    return join(home, 'copilot2copilot');
+  }
+
+  function defaultFilesDir() {
+    return join(channelDir(), 'files');
+  }
+
+  /** 未完成的传输放在独立目录，收件目录里永远不出现 .part。 */
+  function transfersDir() {
+    const dir = join(channelDir(), 'transfers');
+    mkdirSync(dir, { recursive: true });
+    return dir;
   }
 
   function filesDir() {
@@ -219,7 +231,25 @@ export function apply(ctx, config = {}) {
     const base = basename(String(raw ?? '').replace(/\\/g, '/'));
     const cleaned = base.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_').trim();
     if (!cleaned || /^\.+$/.test(cleaned)) return 'file-' + Date.now().toString(36);
-    return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned;
+    return truncateName(cleaned, 200);
+  }
+
+  /** 按 UTF-8 字节截断（保留扩展名、不切断多字节字符），与扩展侧 truncateName 一致。 */
+  function truncateName(name, maxBytes) {
+    if (Buffer.byteLength(name) <= maxBytes) return name;
+    const ext = extname(name);
+    const keepExt = Buffer.byteLength(ext) <= 20;
+    const stem = keepExt ? name.slice(0, -ext.length) : name;
+    const budget = maxBytes - (keepExt ? Buffer.byteLength(ext) : 0);
+    let out = '';
+    let used = 0;
+    for (const ch of stem) {
+      const size = Buffer.byteLength(ch);
+      if (used + size > budget) break;
+      out += ch;
+      used += size;
+    }
+    return out + (keepExt ? ext : '');
   }
 
   /** 落盘到收件目录：重名加序号，绝不覆盖。优先硬链接，不支持时退回复制。 */
@@ -252,8 +282,9 @@ export function apply(ctx, config = {}) {
     throw new Error('收件目录内同名文件过多，请清理后重试');
   }
 
+  /** 索引放在频道目录而不是收件目录：否则对端发来同名文件会被索引静默覆盖。 */
   function indexFilePath() {
-    return join(filesDir(), '.index.json');
+    return join(channelDir(), 'files.index.json');
   }
 
   /** 收件记录落盘：重启后 c2c_files 仍能看到已收文件（文件本身在磁盘上，索引只是元数据）。 */
@@ -262,6 +293,22 @@ export function apply(ctx, config = {}) {
       writeFileSync(indexFilePath(), JSON.stringify(state.files, null, 2), 'utf8');
     } catch {
       // 索引写失败不影响收件本身
+    }
+  }
+
+  /** 崩溃/断电后残留在 transfers/ 的 .part 会在启动时清掉，避免静默占盘。 */
+  function cleanupStaleTransfers() {
+    try {
+      const dir = transfersDir();
+      let removed = 0;
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith('.part')) continue;
+        rmSync(join(dir, name), { force: true });
+        removed += 1;
+      }
+      if (removed > 0) state.detail = '已清理 ' + removed + ' 个未完成的传输残留';
+    } catch {
+      // 目录不可用时跳过
     }
   }
 
@@ -282,7 +329,7 @@ export function apply(ctx, config = {}) {
       const dir = filesDir();
       const entries = [];
       for (const name of readdirSync(dir)) {
-        if (name === '.index.json' || name.endsWith('.part')) continue;
+        if (name.endsWith('.part')) continue;
         const full = join(dir, name);
         let stat;
         try {
@@ -340,7 +387,10 @@ export function apply(ctx, config = {}) {
     for (const rec of incomingFiles.values()) {
       if (rec.from === peer) return reject('同一同事已有正在进行的传输');
     }
-    const tmpPath = join(filesDir(), transferId + '.part');
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(transferId))) {
+      return reject('传输编号格式不合法');
+    }
+    const tmpPath = join(transfersDir(), transferId + '.part');
     let fd;
     try {
       fd = openSync(tmpPath, 'wx', 0o600);
@@ -449,6 +499,8 @@ export function apply(ctx, config = {}) {
       requestId: env.transferId,
       text: rec.note || placed.finalName,
       at: entry.at,
+      read: false,
+      replied: false,
       file: { name: placed.finalName, size: rec.meta.size, path: placed.finalPath },
     });
   }
@@ -504,6 +556,16 @@ export function apply(ctx, config = {}) {
     });
   }
 
+  function hashFile(filePath) {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const hash = createHash('sha256');
+      const stream = createReadStream(filePath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('error', rejectPromise);
+      stream.on('end', () => resolvePromise(hash.digest('hex')));
+    });
+  }
+
   async function sendFile(to, filePath, note) {
     if (state.status !== 'online') throw new Error('未连接中继');
     if (!state.peers.some((peer) => peer.id === to)) {
@@ -519,11 +581,10 @@ export function apply(ctx, config = {}) {
     if (stat.size > FILE_MAX_BYTES) {
       throw new Error('文件 ' + (stat.size / 1048576).toFixed(1) + ' MiB 超过上限 ' + FILE_MAX_BYTES / 1048576 + ' MiB');
     }
-    const buf = await fsp.readFile(filePath);
     const meta = {
       name: basename(filePath),
       size: stat.size,
-      sha256: createHash('sha256').update(buf).digest('hex'),
+      sha256: await hashFile(filePath),
     };
     const transferId = makeId('f');
     const out = { ackWaiters: new Map() };
@@ -544,13 +605,21 @@ export function apply(ctx, config = {}) {
       const offered = await waitAck(-1);
       if (offered.ok === false) throw new Error('对方拒绝接收：' + (offered.reason || '未说明原因'));
       const chunks = Math.ceil(meta.size / FILE_CHUNK_BYTES);
-      for (let seq = 0; seq < chunks; seq += 1) {
-        const slice = buf.subarray(seq * FILE_CHUNK_BYTES, (seq + 1) * FILE_CHUNK_BYTES);
-        if (!sendEnvelope('file-chunk', to, { transferId, seq, data: slice.toString('base64') })) {
-          throw new Error('发送失败：连接已断开');
+      const handle = await fsp.open(filePath, 'r');
+      try {
+        for (let seq = 0; seq < chunks; seq += 1) {
+          const remaining = meta.size - seq * FILE_CHUNK_BYTES;
+          const buf = Buffer.allocUnsafe(Math.min(FILE_CHUNK_BYTES, remaining));
+          const { bytesRead } = await handle.read(buf, 0, buf.length, seq * FILE_CHUNK_BYTES);
+          if (bytesRead !== buf.length) throw new Error('读取文件失败：长度与 stat 不一致');
+          if (!sendEnvelope('file-chunk', to, { transferId, seq, data: buf.toString('base64') })) {
+            throw new Error('发送失败：连接已断开');
+          }
+          const ack = await waitAck(seq);
+          if (ack.ok === false) throw new Error('对方中止接收：' + (ack.reason || '未说明原因'));
         }
-        const ack = await waitAck(seq);
-        if (ack.ok === false) throw new Error('对方中止接收：' + (ack.reason || '未说明原因'));
+      } finally {
+        await handle.close();
       }
       if (!sendEnvelope('file-end', to, { transferId })) throw new Error('发送失败：连接已断开');
       const done = await waitFileEvent((cb) => { out.doneWaiter = cb; }, FILE_DONE_TIMEOUT_MS);
@@ -566,9 +635,20 @@ export function apply(ctx, config = {}) {
   }
 
   try {
+    cleanupStaleTransfers();
     loadFilesIndex();
   } catch {
     // 收件目录不可用时静默跳过
+  }
+
+  /** 本插件版本：与扩展发版号对齐，中继按它做版本门禁。 */
+  function pluginVersion() {
+    try {
+      const pkg = JSON.parse(readFileSync(join(import.meta.dirname || '.', 'package.json'), 'utf8'));
+      return typeof pkg.version === 'string' ? pkg.version : '';
+    } catch {
+      return '';
+    }
   }
 
   async function fetchRelayVersion() {
@@ -672,10 +752,17 @@ export function apply(ctx, config = {}) {
     }
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
     setStatus('connecting', '正在连接中继');
-    const version = await fetchRelayVersion();
+    await fetchRelayVersion();
+    if (state.relayProtocol && state.relayProtocol !== PROTOCOL_VERSION) {
+      state.error = '中继协议 v' + state.relayProtocol + ' 与本插件 v' + PROTOCOL_VERSION + ' 不一致，请同步升级后再连接';
+      setStatus('offline', state.error);
+      return;
+    }
+
     const wsUrl = `${cfg.relayUrl.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(cfg.id)}`;
     const headers = {};
-    if (version) headers['x-client-version'] = version;
+    const clientVersion = cfg.clientVersion || pluginVersion();
+    if (clientVersion) headers['x-client-version'] = clientVersion;
     const token = resolveToken();
     if (token) headers.authorization = `Bearer ${token}`;
     if (cfg.adminToken) headers['x-admin-token'] = cfg.adminToken;
@@ -881,13 +968,14 @@ export function apply(ctx, config = {}) {
     execute: async (args) => {
       const limit = Math.min(Math.max(args.limit || 20, 1), 100);
       const items = args.unread_only
-        ? state.inbox.filter((item) => item.kind === 'message' && !item.read)
+        ? state.inbox.filter((item) => item.kind !== 'reply' && !item.read)
         : state.inbox;
+      const page = items.slice(0, limit);
       if (args.unread_only) {
-        for (const item of items) item.read = true;
+        for (const item of page) item.read = true;
         recountUnread();
       }
-      return { entries: items.slice(0, limit).map((item) => ({ ...item, requestId: item.requestId })), total: items.length };
+      return { entries: page.map((item) => ({ ...item, requestId: item.requestId })), total: items.length };
     },
   }));
 
