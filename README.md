@@ -244,6 +244,7 @@ node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消
 ### 已知限制
 
 - 令牌不再支持写进仓库：`cordis.patch.yml` 默认留空，改由 `tokenFile` 或 profile 层覆盖。
+- 版本对齐：`dsh/package.json` 的版本必须与扩展发版号一致（当前 2026.10.23），否则中继以 4008 拒绝接入；中继协议号与本插件 PROTOCOL_VERSION 不一致时，连接直接失败并把原因写进状态。
 - 接收的文件落在 Host 私有收件目录（`$DSH_HOME/copilot2copilot/files`，默认 `~/.dsh/...`），只读查看，不写入工作区；重名自动加序号，绝不覆盖。
 - 文件传输要求双方同时在线：对端离线时不会排队补发。
 - 版本门禁通过中继 `/healthz` 自动对齐，中继升级后无需改配置。
