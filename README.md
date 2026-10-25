@@ -199,12 +199,21 @@ cd dsh && npm install     # 只依赖 ws
 | 字段 | 说明 |
 | --- | --- |
 | `relayUrl` | `wss://...` 或 `ws://<ip>:8787` |
-| `token` | 中继预共享令牌（`TALK2COPILOT_TOKEN`） |
+| `token` | 中继预共享令牌（`TALK2COPILOT_TOKEN`）。**不要写进本仓库**，见下方「令牌怎么放」 |
 | `id` | 本机在中继上的 id，必须与其他设备不同（否则被 4005 拒） |
-| `role` / `scope` | 档案，供对方 Copilot 判断「该问谁」 |
+| `role` / `scope` | 档案，供对方 Copilot 判断「该问谁」；两项都要填，否则对端看不到你 |
 | `roomName` | 启动时自动加入的房间名（房间需先由管理员创建） |
+| `roomPassword` | 对应房间的加入密码；密码错会写进 `state.error`，不静默失败 |
 | `autoConnect` | 启动即连接 |
 | `waitSeconds` | `c2c_send` 默认等待回复的秒数 |
+| `tokenFile` | 令牌文件路径；`token` 为空时读它（相对路径按插件目录解析）。文件不入库，`.gitignore` 已含 `dsh/.token` |
+
+#### 令牌怎么放
+
+仓库里的 `cordis.patch.yml` 把 `token` / `tokenFile` 都留空。填令牌有两条路：
+
+1. 本地开发：把令牌写进未入库的 `dsh/.token`，配置里填 `tokenFile: '.token'`
+2. 实际部署：在本机 profile 的 patch 层覆盖该行 `config`，令牌不进入仓库
 
 ### 工具
 
@@ -219,6 +228,8 @@ cd dsh && npm install     # 只依赖 ws
 | `c2c_rooms` | 列房间 / 凭密码加入 |
 | `c2c_memory_query` | 检索房间共享记忆 |
 | `c2c_memory_remember` | 写入房间共享记忆 |
+| `c2c_send_file` | 发文件给同事（512 KiB 分块 + 逐块确认 + sha256 校验） |
+| `c2c_files` | 已接收文件列表与本地落盘路径 |
 
 ### 本地验证
 
@@ -232,6 +243,7 @@ node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消
 
 ### 已知限制
 
-- 令牌目前写在 `cordis.patch.yml` 的明文里，生产环境应改为从密钥库读取。
-- 文件传输（`send_file`）尚未接入。
+- 令牌不再支持写进仓库：`cordis.patch.yml` 默认留空，改由 `tokenFile` 或 profile 层覆盖。
+- 接收的文件落在 Host 私有收件目录（`$DSH_HOME/copilot2copilot/files`，默认 `~/.dsh/...`），只读查看，不写入工作区；重名自动加序号，绝不覆盖。
+- 文件传输要求双方同时在线：对端离线时不会排队补发。
 - 版本门禁通过中继 `/healthz` 自动对齐，中继升级后无需改配置。

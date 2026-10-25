@@ -1,14 +1,16 @@
 import { WebSocket } from 'ws';
 
-const VERSION = '2026.10.23';
-const ws = new WebSocket('ws://127.0.0.1:8787/ws?id=setup-admin', {
-  headers: {
-    'x-client-version': VERSION,
-    authorization: 'Bearer dshdevtoken',
-    'x-admin-token': 'dshadmintoken',
-  },
-});
+// 本地联调脚本：令牌与版本从环境变量读取，脚本里不留明文。
+//   $env:C2C_TOKEN = '<中继令牌>'; node dsh\dev\create-room.mjs
+const VERSION = process.env.C2C_VERSION || '2026.10.23';
+const TOKEN = process.env.C2C_TOKEN || '';
+const ADMIN_TOKEN = process.env.C2C_ADMIN_TOKEN || '';
 
+const headers = { 'x-client-version': VERSION };
+if (TOKEN) headers.authorization = 'Bearer ' + TOKEN;
+if (ADMIN_TOKEN) headers['x-admin-token'] = ADMIN_TOKEN;
+
+const ws = new WebSocket('ws://127.0.0.1:8787/ws?id=setup-admin', { headers });
 const done = (code) => { try { ws.close(); } catch { /* ignore */ } setTimeout(() => process.exit(code), 100); };
 
 ws.on('open', () => {
@@ -25,7 +27,7 @@ ws.on('open', () => {
 ws.on('message', (raw) => {
   const env = JSON.parse(String(raw));
   if (env.kind === 'admin') {
-    console.log(env.ok ? `room created: ${JSON.stringify(env.payload.room)}` : `failed: ${env.error}`);
+    console.log(env.ok ? 'room created: ' + JSON.stringify(env.payload.room) : 'failed: ' + env.error);
     done(env.ok ? 0 : 1);
   }
 });
