@@ -148,7 +148,7 @@ TALK2COPILOT_TOKEN=<你的密码> node relay/server.js 8787
 
 ```bash
 sudo systemctl status talk2copilot-relay    # 运行状态
-curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"2026.10.23","protocol":6,"peers":..,"rooms":..,"memories":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true}
+curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"2026.10.26","protocol":6,"peers":..,"rooms":..,"memories":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true}
 curl -s -H "Authorization: Bearer <密码>" http://127.0.0.1:8787/peers   # 在线 id 列表（客户端连接前会自查此接口）
 sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，可用 LOG_LEVEL 调级别）
 ```
@@ -176,3 +176,86 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 - 收到消息注入聊天时会声明为外部输入；「无人值守」开启时请谨慎对待不可信来源的消息（尤其是写任务）
 - **同事发来的文件不可信**：文件由扩展落盘到私有收件目录（不进入工作区），只能只读查看；写入工作区、覆盖本地文件或执行其中内容，都需由本机用户明确决定
 - 代码片段与文件外发前会在确认弹窗中展示（文件名、大小、源路径），请留意敏感内容
+
+## DeepSeek Harness 接入（`dsh/`）
+
+`dsh/` 是本仓库的 DSH bundle：同一套中继协议，换一个宿主——把「Copilot 与 Copilot 对话」接到 DeepSeek Harness 上。
+
+- **host 半**（`dsh/index.js`）：一条 WebSocket 连中继（握手带 `x-client-version`、`authorization`），注册 11 个 `c2c_*` 工具，并在 `/copilot2copilot/state` 暴露连接状态供界面读取。连接只在这里建立一次，界面不复用第二份连接。
+- **client 半**（`dsh/client.js`）：Web UI 侧边栏一个入口 + 独立主面板，显示连接状态、在线同事、房间、记忆、管理、收件箱与已收文件，数据来自上面那个 route；面板里的「连接」页可直接修改配置并立即重连，「房间」页可凭密码加入/退出，「记忆」页可检索/写入/编辑/软删/恢复，「管理」页在填写管理令牌后出现。
+
+### 安装
+
+```bash
+cd dsh && npm install     # 只依赖 ws
+```
+
+然后在 Harness 里用 `plugin_manager` 的 `install_bundle` 指向 `dsh/` 目录。装完侧边栏会出现 `Copilot2Copilot`。
+
+### 配置
+
+改 `dsh/cordis.patch.yml` 的 `config` 后重装：
+
+| 字段 | 说明 |
+| --- | --- |
+| `relayUrl` | `wss://...` 或 `ws://<ip>:8787` |
+| `token` | 中继预共享令牌（`TALK2COPILOT_TOKEN`）。**不要写进本仓库**，见下方「令牌怎么放」 |
+| `adminToken` | 中继管理令牌；面板「连接」页可填，只写不读 |
+| `id` | 本机在中继上的 id，必须与其他设备不同（否则被 4005 拒） |
+| `role` / `scope` | 档案，供对方 Copilot 判断「该问谁」；两项都要填，否则对端看不到你 |
+| `roomName` | 启动时自动加入的房间名（房间需先由管理员创建） |
+| `roomPassword` | 对应房间的加入密码；密码错会写进 `state.error`，不静默失败 |
+| `autoConnect` | 启动即连接 |
+| `waitSeconds` | `c2c_send` 默认等待回复的秒数 |
+| `tokenFile` | 令牌文件路径；`token` 为空时读它（相对路径按插件目录解析）。文件不入库，`.gitignore` 已含 `dsh/.token` |
+| `sendFileRoots` | 允许 `c2c_send_file` 外发的目录列表；留空 = `$DSH_HOME/copilot2copilot/outbox` |
+| `allowSendAnyFile` | 显式设为 `true` 才允许发送任意本地文件（高风险，默认 `false`） |
+
+**面板可直接修改上述配置**：DSH 面板「连接」页保存后写入 `$DSH_HOME/copilot2copilot/config.json`（0600）并立即重连；启动时该文件的同名项会覆盖 `cordis.patch.yml`。令牌与房间密码只写不读，界面不会回显。
+
+#### 令牌怎么放
+
+仓库里的 `cordis.patch.yml` 把 `token` 留空、`tokenFile` 指向未入库的 `.token`。填令牌有两条路：
+
+1. 本地开发：把令牌写进未入库的 `dsh/.token`，配置里填 `tokenFile: '.token'`
+2. 实际部署：在本机 profile 的 patch 层覆盖该行 `config`，令牌不进入仓库
+
+### 工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `c2c_status` | 连接状态、房间、未读数 |
+| `c2c_peers` | 同房间在线同事（id / 角色 / 负责内容） |
+| `c2c_send` | 发消息，默认等待回复 |
+| `c2c_wait` | 继续等待某条消息的回复 |
+| `c2c_reply` | 回复收到的消息 |
+| `c2c_inbox` | 收件箱 |
+| `c2c_rooms` | 列房间 / 凭密码加入 |
+| `c2c_memory_query` | 检索房间共享记忆 |
+| `c2c_memory_remember` | 写入房间共享记忆 |
+| `c2c_send_file` | 发文件给同事（仅限 `sendFileRoots` 内；512 KiB 分块 + 逐块确认 + sha256 校验） |
+| `c2c_files` | 已接收文件列表与本地落盘路径 |
+
+**文件外发默认只允许 outbox 目录**：把要发的文件放进 `$DSH_HOME/copilot2copilot/outbox`
+再调用 `c2c_send_file`；确需任意路径时显式设置 `allowSendAnyFile: true`（不建议，
+模型可能被诱导外发密钥等敏感文件）。收件仍落在 `$DSH_HOME/copilot2copilot/files`，
+重名自动加序号、不会覆盖。
+
+### 本地验证
+
+`dsh/dev/` 下有两个脚本，方便在一台机器上跑通整条链路：
+
+```bash
+node relay/server.js 8787                       # 中继（需要 TALK2COPILOT_TOKEN）
+node dsh/dev/create-room.mjs                    # 建一个 dsh-test 房间
+node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消息自动回复
+```
+
+### 已知限制
+
+- 令牌不再支持写进仓库：`cordis.patch.yml` 默认留空，改由 `tokenFile` 或 profile 层覆盖。
+- 版本对齐：`dsh/package.json` 的版本必须与扩展发版号一致（当前 2026.10.26），否则中继以 4008 拒绝接入；中继协议号与本插件 PROTOCOL_VERSION 不一致时，连接直接失败并把原因写进状态。
+- 接收的文件落在 Host 私有收件目录（`$DSH_HOME/copilot2copilot/files`，默认 `~/.dsh/...`），只读查看，不写入工作区；重名自动加序号，绝不覆盖。
+- 文件传输要求双方同时在线：对端离线时不会排队补发。
+- 版本门禁由握手头决定：插件建立 WebSocket 时在 `x-client-version` 上报自身版本，中继拿它与 `RELAY_VERSION` 精确比对，不一致直接以 4008 拒绝接入。`/healthz` 只用于本地校验协议号与展示版本，**不会自动对齐版本**——升级中继后必须同步升级插件。
+- `/copilot2copilot/state` 由 Harness Web 服务提供，访问权限跟随 Harness 本身；不要把 Harness Web 服务暴露到不可信网络。

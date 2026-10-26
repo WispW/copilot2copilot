@@ -14,3 +14,6 @@ relay/memory.json*
 AGENTS.md
 # 方案与设计文档（本地保留，不入库）
 docs/
+
+# Copilot2Copilot DSH 本地令牌（不入库）
+dsh/.token

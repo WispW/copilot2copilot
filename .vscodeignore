@@ -17,3 +17,5 @@ AGENTS.md
 111.png
 # 本地方案与设计文档（docs/ 不入库，也不进扩展包）
 docs/**
+# DSH bundle 不属于 VS Code 扩展；其中可能含 .token / node_modules，绝不能进扩展包
+dsh/**

@@ -1,0 +1,18 @@
+- insert:
+    - id: copilot2copilot-dsh
+      name: '@local/copilot2copilot-dsh'
+      config:
+        relayUrl: 'ws://127.0.0.1:8787'
+        token: ''
+        tokenFile: '.token'
+        id: 'dsh-dev'
+        role: 'DSH 助手'
+        scope: ''
+        roomName: 'dsh-test'
+        roomPassword: ''
+        autoConnect: true
+        waitSeconds: 30
+        # 文件外发白名单：留空表示只允许 $DSH_HOME/copilot2copilot/outbox
+        sendFileRoots: []
+        # 显式设为 true 才允许发送任意本地文件（高风险，不建议）
+        allowSendAnyFile: false
