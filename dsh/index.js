@@ -52,6 +52,31 @@ function toHttpUrl(wsUrl) {
   return wsUrl.replace(/^ws/, 'http').replace(/\/+$/, '');
 }
 
+/**
+ * 判断文件是否在允许外发的目录内（用 realpath 防符号链接逃逸）。
+ * 独立导出便于测试；allowAny 只应由显式配置开启。
+ */
+export async function isFileAllowed(filePath, roots, allowAny = false) {
+  if (allowAny) return true;
+  let real;
+  try {
+    real = await fsp.realpath(filePath);
+  } catch {
+    return false;
+  }
+  for (const root of roots) {
+    let base;
+    try {
+      base = await fsp.realpath(root);
+    } catch {
+      base = resolve(root);
+    }
+    const prefix = base.endsWith(sep) ? base : base + sep;
+    if (real === base || real.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 export function apply(ctx, config = {}) {
   const cfg = {
     relayUrl: '',
@@ -64,6 +89,10 @@ export function apply(ctx, config = {}) {
     roomName: '',
     roomPassword: '',
     filesDir: '',
+    /** 允许外发的目录（默认 $DSH_HOME/copilot2copilot/outbox）；仅这些目录内的文件可被 c2c_send_file 发送 */
+    sendFileRoots: [],
+    /** 显式关闭目录限制时才允许发送任意本地文件（高风险，默认关） */
+    allowSendAnyFile: false,
     autoConnect: false,
     waitSeconds: 60,
     clientVersion: '',
@@ -227,11 +256,33 @@ export function apply(ctx, config = {}) {
     return dir;
   }
 
+  /** 文件外发白名单：未配置时只允许 outbox 目录，避免模型被诱导外发任意本地文件。 */
+  function sendRoots() {
+    const configured = Array.isArray(cfg.sendFileRoots)
+      ? cfg.sendFileRoots.filter((item) => typeof item === 'string' && item.trim())
+      : [];
+    const roots = configured.length > 0 ? configured : [join(channelDir(), 'outbox')];
+    return roots.map((root) => (isAbsolute(root) ? root : join(import.meta.dirname || process.cwd(), root)));
+  }
+
+  function ensureSendRoots() {
+    for (const root of sendRoots()) {
+      try {
+        mkdirSync(root, { recursive: true });
+      } catch {
+        // 目录不可建时由实际发送时给出错误
+      }
+    }
+  }
+
   function safeFileName(raw) {
     const base = basename(String(raw ?? '').replace(/\\/g, '/'));
     const cleaned = base.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_').trim();
     if (!cleaned || /^\.+$/.test(cleaned)) return 'file-' + Date.now().toString(36);
-    return truncateName(cleaned, 200);
+    // Windows 保留名（CON / NUL / COM1…）在 Windows 上无法落盘
+    const stem = cleaned.replace(/\.[^.]*$/, '').toUpperCase();
+    const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem);
+    return truncateName(reserved ? '_' + cleaned : cleaned, 200);
   }
 
   /** 按 UTF-8 字节截断（保留扩展名、不切断多字节字符），与扩展侧 truncateName 一致。 */
@@ -370,6 +421,24 @@ export function apply(ctx, config = {}) {
     try { closeSync(rec.fd); } catch { /* 已关闭 */ }
     rmSync(rec.tmpPath, { force: true });
     sendEnvelope('file-done', rec.from, { transferId, ok: false, reason });
+  }
+
+  /** 连接断开/插件销毁时立即释放所有传输（临时文件、fd 与等待中的调用），不等超时。 */
+  function abortAllTransfers(reason) {
+    for (const transferId of [...incomingFiles.keys()]) {
+      abortIncoming(transferId, reason);
+    }
+    for (const [transferId, out] of outgoingFiles) {
+      for (const waiter of [...out.ackWaiters.values()]) {
+        waiter({ ok: false, reason });
+      }
+      out.ackWaiters.clear();
+      if (out.doneWaiter) {
+        out.doneWaiter({ ok: false, reason });
+        out.doneWaiter = null;
+      }
+      outgoingFiles.delete(transferId);
+    }
   }
 
   async function onFileOffer(env) {
@@ -578,6 +647,13 @@ export function apply(ctx, config = {}) {
       throw new Error('找不到要发送的文件：' + filePath);
     }
     if (!stat.isFile()) throw new Error('只能发送普通文件（当前路径不是文件）：' + filePath);
+    const roots = sendRoots();
+    if (!(await isFileAllowed(filePath, roots, cfg.allowSendAnyFile === true))) {
+      throw new Error(
+        '出于安全考虑，c2c_send_file 只能发送 sendFileRoots 内的文件（当前允许：' + roots.join('、')
+        + '）。请先把文件放入该目录，或显式设置 allowSendAnyFile=true',
+      );
+    }
     if (stat.size > FILE_MAX_BYTES) {
       throw new Error('文件 ' + (stat.size / 1048576).toFixed(1) + ' MiB 超过上限 ' + FILE_MAX_BYTES / 1048576 + ' MiB');
     }
@@ -637,8 +713,9 @@ export function apply(ctx, config = {}) {
   try {
     cleanupStaleTransfers();
     loadFilesIndex();
+    ensureSendRoots();
   } catch {
-    // 收件目录不可用时静默跳过
+    // 收件/外发目录不可用时静默跳过
   }
 
   /** 本插件版本：与扩展发版号对齐，中继按它做版本门禁。 */
@@ -802,6 +879,7 @@ export function apply(ctx, config = {}) {
     ws.on('close', (code, reason) => {
       if (socket === ws) socket = null;
       state.peers = [];
+      abortAllTransfers('连接已断开');
       const detail = `连接关闭 code=${code}${reason ? ` ${String(reason)}` : ''}`;
       if (FATAL_CLOSE_CODES.has(code)) {
         setStatus('offline', detail + '（需人工处理，不自动重连）');
@@ -842,6 +920,7 @@ export function apply(ctx, config = {}) {
     if (cfg.autoConnect) void connect();
     return () => {
       disposed = true;
+      abortAllTransfers('插件已停止');
       disconnect();
     };
   });
@@ -1060,12 +1139,12 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register({
     name: 'c2c_send_file',
-    description: 'Send a local file to another Copilot through the relay: chunked with per-chunk acknowledgement and sha256 verification. Both sides must be online (files are not queued). Returns the name the peer saved it under.',
+    description: 'Send a local file to another Copilot through the relay: chunked with per-chunk acknowledgement and sha256 verification. Only files inside the configured sendFileRoots (default: $DSH_HOME/copilot2copilot/outbox) are allowed, unless allowSendAnyFile is explicitly enabled. Both sides must be online (files are not queued). Returns the name the peer saved it under.',
     parameters: {
       type: 'object',
       properties: {
         to: { type: 'string', description: 'Peer id, as returned by c2c_peers.' },
-        path: { type: 'string', description: 'Absolute path of the local file to send.' },
+        path: { type: 'string', description: 'Absolute path of the local file to send; must be under sendFileRoots.' },
         note: { type: 'string', description: 'Optional note delivered alongside the file.' },
       },
       required: ['to', 'path'],

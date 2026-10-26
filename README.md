@@ -207,6 +207,8 @@ cd dsh && npm install     # 只依赖 ws
 | `autoConnect` | 启动即连接 |
 | `waitSeconds` | `c2c_send` 默认等待回复的秒数 |
 | `tokenFile` | 令牌文件路径；`token` 为空时读它（相对路径按插件目录解析）。文件不入库，`.gitignore` 已含 `dsh/.token` |
+| `sendFileRoots` | 允许 `c2c_send_file` 外发的目录列表；留空 = `$DSH_HOME/copilot2copilot/outbox` |
+| `allowSendAnyFile` | 显式设为 `true` 才允许发送任意本地文件（高风险，默认 `false`） |
 
 #### 令牌怎么放
 
@@ -228,8 +230,13 @@ cd dsh && npm install     # 只依赖 ws
 | `c2c_rooms` | 列房间 / 凭密码加入 |
 | `c2c_memory_query` | 检索房间共享记忆 |
 | `c2c_memory_remember` | 写入房间共享记忆 |
-| `c2c_send_file` | 发文件给同事（512 KiB 分块 + 逐块确认 + sha256 校验） |
+| `c2c_send_file` | 发文件给同事（仅限 `sendFileRoots` 内；512 KiB 分块 + 逐块确认 + sha256 校验） |
 | `c2c_files` | 已接收文件列表与本地落盘路径 |
+
+**文件外发默认只允许 outbox 目录**：把要发的文件放进 `$DSH_HOME/copilot2copilot/outbox`
+再调用 `c2c_send_file`；确需任意路径时显式设置 `allowSendAnyFile: true`（不建议，
+模型可能被诱导外发密钥等敏感文件）。收件仍落在 `$DSH_HOME/copilot2copilot/files`，
+重名自动加序号、不会覆盖。
 
 ### 本地验证
 
@@ -248,3 +255,4 @@ node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消
 - 接收的文件落在 Host 私有收件目录（`$DSH_HOME/copilot2copilot/files`，默认 `~/.dsh/...`），只读查看，不写入工作区；重名自动加序号，绝不覆盖。
 - 文件传输要求双方同时在线：对端离线时不会排队补发。
 - 版本门禁通过中继 `/healthz` 自动对齐，中继升级后无需改配置。
+- `/copilot2copilot/state` 由 Harness Web 服务提供，访问权限跟随 Harness 本身；不要把 Harness Web 服务暴露到不可信网络。

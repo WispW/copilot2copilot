@@ -7,8 +7,12 @@
         tokenFile: '.token'
         id: 'dsh-dev'
         role: 'DSH 助手'
-        scope: '本地开发机 · G:\ai'
+        scope: ''
         roomName: 'dsh-test'
-        roomPassword: 'pw123'
+        roomPassword: ''
         autoConnect: true
         waitSeconds: 30
+        # 文件外发白名单：留空表示只允许 $DSH_HOME/copilot2copilot/outbox
+        sendFileRoots: []
+        # 显式设为 true 才允许发送任意本地文件（高风险，不建议）
+        allowSendAnyFile: false
