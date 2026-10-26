@@ -225,13 +225,17 @@ window.__ModuleLoader__.load({
         adminToken: '',
         waitSeconds: String(c.waitSeconds || 60),
         autoConnect: c.autoConnect === true,
+        // 外发目录在表单里按「一行一个」编辑，保存时再拆成数组
+        sendFileRoots: Array.isArray(c.sendFileRoots) ? c.sendFileRoots.join('\n') : '',
+        allowSendAnyFile: c.allowSendAnyFile === true,
       };
     }
 
     function isDraftDirty(draft, config) {
       if (!draft) return false;
       const base = configDraft(config);
-      return ['relayUrl', 'id', 'role', 'scope', 'roomName', 'waitSeconds', 'autoConnect']
+      return ['relayUrl', 'id', 'role', 'scope', 'roomName', 'waitSeconds', 'autoConnect',
+        'sendFileRoots', 'allowSendAnyFile']
         .some((key) => String(draft[key]) !== String(base[key]))
         || Boolean(draft.token)
         || Boolean(draft.adminToken)
@@ -258,6 +262,17 @@ window.__ModuleLoader__.load({
           key: 'i',
           class: 'c2c-input',
           type: (options && options.type) || 'text',
+          value: draft[key] === undefined ? '' : draft[key],
+          placeholder: (options && options.placeholder) || '',
+          onInput: (event) => setDraft({ ...draft, [key]: event.currentTarget.value }),
+        }),
+      ]);
+      const area = (label, key, options) => h('label', { class: 'c2c-field' }, [
+        h('span', { key: 'l' }, label),
+        h('textarea', {
+          key: 't',
+          class: 'c2c-textarea',
+          rows: (options && options.rows) || 3,
           value: draft[key] === undefined ? '' : draft[key],
           placeholder: (options && options.placeholder) || '',
           onInput: (event) => setDraft({ ...draft, [key]: event.currentTarget.value }),
@@ -351,6 +366,25 @@ window.__ModuleLoader__.load({
             }),
             field('等待回复秒数', 'waitSeconds', { type: 'number', placeholder: '60' }),
           ]),
+        ])),
+        h(Card, { key: 'files', title: '文件外发（DSH 专用）' }, h('div', { class: 'c2c-form' }, [
+          area('允许外发的目录（一行一个）', 'sendFileRoots', {
+            rows: 3,
+            placeholder: '留空表示只允许 ~/.dsh/copilot2copilot/outbox',
+          }),
+          h('p', { key: 'hint', class: 'c2c-hint' }, '只允许发送这些目录内的文件，子目录同样允许；留空时仅 outbox 可发。可填绝对路径，或相对插件目录的路径。'),
+          h('label', { key: 'any', class: 'c2c-check' }, [
+            h('input', {
+              key: 'cb',
+              type: 'checkbox',
+              checked: draft.allowSendAnyFile === true,
+              onChange: (event) => setDraft({ ...draft, allowSendAnyFile: event.currentTarget.checked }),
+            }),
+            '允许发送任意本地文件（高风险）',
+          ]),
+          draft.allowSendAnyFile === true
+            ? h('div', { key: 'warn', class: 'c2c-banner danger' }, '已放开任意文件外发：一旦被同事消息诱导，工作区外的私密文件也可能被发出。只在临时排障时打开，用完请关掉。')
+            : null,
         ])),
         h('div', { key: 'actions', class: 'c2c-actions' }, [
           h('button', {
@@ -1154,7 +1188,9 @@ window.__ModuleLoader__.load({
       const inbox = Array.isArray(state.inbox) ? state.inbox : [];
       const rooms = Array.isArray(state.rooms) ? state.rooms : [];
       const files = Array.isArray(state.files) ? state.files : [];
-      const unread = inbox.filter((item) => item.kind !== 'reply' && !item.read).length;
+      // /state 的 inbox 只给最近 50 条，未读总数以 Host 按完整收件箱统计的 state.unread 为准
+      const pageUnread = inbox.filter((item) => item.kind !== 'reply' && !item.read).length;
+      const unread = Math.max(Number(state.unread) || 0, pageUnread);
       const joinedRooms = rooms.filter((room) => room.joined).length;
       const dirty = isDraftDirty(draft, state.config);
 
@@ -1168,7 +1204,15 @@ window.__ModuleLoader__.load({
         setSaving(true);
         setSaveError('');
         try {
-          const payload = { ...draft, waitSeconds: Number(draft.waitSeconds) || 60 };
+          const payload = {
+            ...draft,
+            waitSeconds: Number(draft.waitSeconds) || 60,
+            // 表单里按行/逗号分隔编辑，Host 侧要的是数组
+            sendFileRoots: String(draft.sendFileRoots || '')
+              .split(/[\n,]/)
+              .map((item) => item.trim())
+              .filter(Boolean),
+          };
           const res = await fetch('/copilot2copilot/config', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

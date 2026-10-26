@@ -121,6 +121,12 @@ export function apply(ctx, config = {}) {
   let reconnectTimer = null;
   let reconnectAttempt = 0;
   let disposed = false;
+  /** 是否有 connect() 在途：fetchRelayVersion 期间 socket 仍是 null，需要这道闸门挡住并发建连 */
+  let connecting = false;
+  /** 连接代际：disconnect / 配置重连时自增，用来作废在途连接与迟到的 socket 回调 */
+  let generation = 0;
+  /** 在途 healthz 探测的取消句柄，手动断开时用它立刻取消，而不是干等 5 秒超时 */
+  let connectAbort = null;
 
   /** Prefer the inline token; fall back to a local file so the repo never carries a secret. */
   function resolveToken() {
@@ -282,18 +288,41 @@ export function apply(ctx, config = {}) {
     return join(channelDir(), 'config.json');
   }
 
+  /**
+   * 校验并规范化中继地址：只接受 ws/wss 且有主机名。
+   * 非法值必须在落盘前拦住——config.json 会被每次启动读取，一条坏地址会让插件
+   * 之后每次启动都连不上，而 `new WebSocket()` 对非法 URL 是直接抛异常的。
+   */
+  function normalizeRelayUrl(raw) {
+    let url = String(raw || '').trim();
+    if (!url) return { url: '' };
+    if (/^https?:\/\//i.test(url)) url = url.replace(/^http/i, 'ws');
+    if (!/^wss?:\/\//i.test(url)) url = 'ws://' + url;
+    if (url.length > 300) return { error: '中继地址过长' };
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { error: `中继地址不合法：${url}` };
+    }
+    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+      return { error: '中继地址必须以 ws:// 或 wss:// 开头' };
+    }
+    if (!parsed.hostname) return { error: '中继地址缺少主机名' };
+    // 连接时会在末尾拼 /ws?id=...，带路径的地址拼出来是坏的，直接拒掉
+    if (parsed.pathname && parsed.pathname !== '/') {
+      return { error: '中继地址只填到主机与端口，不要带路径' };
+    }
+    // origin 只保留 scheme + host + port，顺带丢掉末尾斜杠与查询串
+    return { url: parsed.origin };
+  }
+
   function applySettings(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return '配置格式不正确';
     if (typeof input.relayUrl === 'string') {
-      let url = input.relayUrl.trim();
-      if (url) {
-        if (/^https?:\/\//i.test(url)) url = url.replace(/^http/i, 'ws');
-        if (!/^wss?:\/\//i.test(url)) url = 'ws://' + url;
-        if (url.length > 300) return '中继地址过长';
-        cfg.relayUrl = url.replace(/\/+$/, '');
-      } else {
-        cfg.relayUrl = '';
-      }
+      const normalized = normalizeRelayUrl(input.relayUrl);
+      if (normalized.error) return normalized.error;
+      cfg.relayUrl = normalized.url;
     }
     if (typeof input.id === 'string') {
       const id = input.id.trim().slice(0, 64);
@@ -843,15 +872,20 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  async function fetchRelayVersion() {
+  async function fetchRelayVersion(externalSignal) {
     if (!cfg.relayUrl) {
       state.relayVersion = '';
       state.relayProtocol = 0;
       return '';
     }
     const base = toHttpUrl(cfg.relayUrl);
+    // 自己控超时，这样手动断开时能通过 externalSignal 立刻取消，而不是干等 5 秒
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const forwardAbort = () => controller.abort();
+    if (externalSignal) externalSignal.addEventListener('abort', forwardAbort, { once: true });
     try {
-      const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(`${base}/healthz`, { signal: controller.signal });
       const body = await res.json();
       if (body && body.status === 'ok' && typeof body.protocol === 'number') {
         state.relayVersion = typeof body.version === 'string' ? body.version : '';
@@ -863,6 +897,9 @@ export function apply(ctx, config = {}) {
     } catch {
       state.relayVersion = '';
       state.relayProtocol = 0;
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', forwardAbort);
     }
     return state.relayVersion;
   }
@@ -954,67 +991,133 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
-    setStatus('connecting', '正在连接中继');
-    await fetchRelayVersion();
-    if (state.relayProtocol && state.relayProtocol !== PROTOCOL_VERSION) {
-      state.error = '中继协议 v' + state.relayProtocol + ' 与本插件 v' + PROTOCOL_VERSION + ' 不一致，请同步升级后再连接';
-      setStatus('offline', state.error);
-      return;
-    }
-
-    const wsUrl = `${cfg.relayUrl.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(cfg.id)}`;
-    const headers = {};
-    const clientVersion = cfg.clientVersion || pluginVersion();
-    if (clientVersion) headers['x-client-version'] = clientVersion;
-    const token = resolveToken();
-    if (token) headers.authorization = `Bearer ${token}`;
-    if (cfg.adminToken) headers['x-admin-token'] = cfg.adminToken;
-
-    const ws = new WebSocket(wsUrl, { headers, handshakeTimeout: 8000 });
-    socket = ws;
-
-    ws.on('open', () => {
-      reconnectAttempt = 0;
-      setStatus('online', '已连接中继');
-      state.connectedAt = Date.now();
-      state.error = '';
-      ws.send(JSON.stringify({
-        v: PROTOCOL_VERSION, kind: 'hello', id: makeId('hi'), from: self().id, to: 'server',
-        ts: Date.now(), profile: self(),
-      }));
-      void controlOp('room', 'list').then(async (result) => {
-        if (!result.ok || !result.payload) return;
-        applyRooms(result.payload.rooms);
-        const target = state.rooms.find((room) => room.name === cfg.roomName);
-        if (!target || target.joined) return;
-        const joined = await controlOp('room', 'join', { roomId: target.id, password: cfg.roomPassword || '' });
-        if (joined.ok) {
-          await controlOp('room', 'list').then((again) => {
-            if (again.ok && again.payload) applyRooms(again.payload.rooms);
-          });
-        } else {
-          state.error = `加入房间「${cfg.roomName}」失败：${joined.error || '未知原因'}`;
-          state.detail = state.error;
-        }
-      });
-    });
-    ws.on('message', handleMessage);
-    ws.on('error', (err) => {
-      state.error = err && err.message ? err.message : String(err);
-    });
-    ws.on('close', (code, reason) => {
-      // 已被新连接替换 / 主动断开：旧 socket 的迟到 close 不能污染当前会话
-      if (socket !== ws) return;
-      socket = null;
-      state.peers = [];
-      abortAllTransfers('连接已断开');
-      const detail = `连接关闭 code=${code}${reason ? ` ${String(reason)}` : ''}`;
-      if (FATAL_CLOSE_CODES.has(code)) {
-        setStatus('offline', detail + '（需人工处理，不自动重连）');
+    // 同一个连接尝试只允许一个在途：探测 healthz 期间 socket 还是 null，缺了这道
+    // 闸门时连点「重试连接」会并发建多条 WS，中继只留第一条、其余回 4005，
+    // 而 socket 又指向被拒的那条，界面显示 offline 但中继仍挂着僵尸连接。
+    if (connecting) return;
+    connecting = true;
+    const gen = generation;
+    const controller = new AbortController();
+    connectAbort = controller;
+    try {
+      setStatus('connecting', '正在连接中继');
+      await fetchRelayVersion(controller.signal);
+      if (gen !== generation) return;
+      if (state.relayProtocol && state.relayProtocol !== PROTOCOL_VERSION) {
+        state.error = '中继协议 v' + state.relayProtocol + ' 与本插件 v' + PROTOCOL_VERSION + ' 不一致，请同步升级后再连接';
+        setStatus('offline', state.error);
         return;
       }
-      scheduleReconnect(detail);
-    });
+
+      const wsUrl = `${cfg.relayUrl.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(cfg.id)}`;
+      const headers = {};
+      const clientVersion = cfg.clientVersion || pluginVersion();
+      if (clientVersion) headers['x-client-version'] = clientVersion;
+      const token = resolveToken();
+      if (token) headers.authorization = `Bearer ${token}`;
+      if (cfg.adminToken) headers['x-admin-token'] = cfg.adminToken;
+
+      const ws = new WebSocket(wsUrl, { headers, handshakeTimeout: 8000 });
+      if (gen !== generation) {
+        // 建连期间已被 disconnect / 新配置取代：这条连接立刻作废
+        try { ws.terminate(); } catch { /* ignore */ }
+        return;
+      }
+      socket = ws;
+
+      ws.on('open', () => {
+        if (socket !== ws) return;
+        reconnectAttempt = 0;
+        setStatus('online', '已连接中继');
+        state.connectedAt = Date.now();
+        state.error = '';
+        ws.send(JSON.stringify({
+          v: PROTOCOL_VERSION, kind: 'hello', id: makeId('hi'), from: self().id, to: 'server',
+          ts: Date.now(), profile: self(),
+        }));
+        void controlOp('room', 'list').then(async (result) => {
+          if (socket !== ws) return;
+          if (!result.ok || !result.payload) return;
+          applyRooms(result.payload.rooms);
+          const target = state.rooms.find((room) => room.name === cfg.roomName);
+          if (!target || target.joined) return;
+          const joined = await controlOp('room', 'join', { roomId: target.id, password: cfg.roomPassword || '' });
+          if (joined.ok) {
+            await controlOp('room', 'list').then((again) => {
+              if (again.ok && again.payload) applyRooms(again.payload.rooms);
+            });
+          } else {
+            state.error = `加入房间「${cfg.roomName}」失败：${joined.error || '未知原因'}`;
+            state.detail = state.error;
+          }
+        });
+      });
+      ws.on('message', (raw) => {
+        // 旧连接的迟到消息不能写进当前会话的状态
+        if (socket !== ws) return;
+        handleMessage(raw);
+      });
+      ws.on('error', (err) => {
+        if (socket !== ws) return;
+        state.error = err && err.message ? err.message : String(err);
+      });
+      ws.on('close', (code, reason) => {
+        // 已被新连接替换 / 主动断开：旧 socket 的迟到 close 不能污染当前会话
+        if (socket !== ws) return;
+        const detail = `连接关闭 code=${code}${reason ? ` ${String(reason)}` : ''}`;
+        // 掉线时保留房间与中继版本，界面不会因为一次抖动就整片清空
+        teardownConnection(detail, true);
+        if (FATAL_CLOSE_CODES.has(code)) {
+          setStatus('offline', detail + '（需人工处理，不自动重连）');
+          return;
+        }
+        scheduleReconnect(detail);
+      });
+    } catch (err) {
+      // 被 disconnect / 新配置取消的连接尝试不算失败：它已被更晚的尝试取代
+      if (gen !== generation || (err && err.name === 'AbortError')) return;
+      // 非法地址会让 new WebSocket() 同步抛错：这里必须兜住，否则一次手误就带走整个 Host 进程
+      const message = err && err.message ? err.message : String(err);
+      state.error = `连接失败：${message}`;
+      setStatus('offline', state.error);
+    } finally {
+      if (connectAbort === controller) connectAbort = null;
+      connecting = false;
+    }
+  }
+
+  /**
+   * 统一的连接清理：意外掉线、手动断开、配置变更都走这里。
+   * 不能「先置空 socket 再 close」——那样 close 处理器里的 `socket !== ws` 守卫会
+   * 整段跳过，peers 残留、文件传输不中止、pending 调用要干等到超时。
+   * keepMeta=true 时保留房间与中继版本（瞬时掉线用），手动断开则一并清空。
+   */
+  function teardownConnection(reason, keepMeta) {
+    generation += 1;
+    if (connectAbort) {
+      connectAbort.abort();
+      connectAbort = null;
+    }
+    connecting = false;
+    socket = null;
+    state.peers = [];
+    if (!keepMeta) {
+      state.rooms = [];
+      state.relayVersion = '';
+      state.relayProtocol = 0;
+      state.connectedAt = 0;
+    }
+    abortAllTransfers(reason);
+    // 在途调用立刻结算：否则 c2c_send / c2c_wait 要等 60~180 秒才返回
+    for (const [requestId, waiter] of pending) {
+      if (requestId.startsWith('ctl:')) {
+        waiter.resolve({ ok: false, error: reason });
+      } else {
+        clearTimeout(waiter.timer);
+        waiter.resolve({ status: 'offline', text: '', error: reason });
+      }
+    }
+    pending.clear();
   }
 
   function disconnect() {
@@ -1023,7 +1126,7 @@ export function apply(ctx, config = {}) {
       reconnectTimer = null;
     }
     const ws = socket;
-    socket = null;
+    teardownConnection('已断开连接');
     if (ws) {
       try { ws.close(1000, 'dsh disconnect'); } catch { /* ignore */ }
     }
@@ -1038,12 +1141,17 @@ export function apply(ctx, config = {}) {
     }
     reconnectAttempt = 0;
     const ws = socket;
-    socket = null;
+    teardownConnection('配置已更新');
     if (ws) {
       try { ws.close(1000, 'config changed'); } catch { /* ignore */ }
     }
+    if (!cfg.relayUrl || !cfg.id) {
+      setStatus('offline', '未配置中继地址或 id');
+      return;
+    }
     setStatus('connecting', '配置已更新，正在连接');
-    void connect();
+    // connect() 内部已兜住异常，这里的 catch 只是防止未处理的 Promise 拒绝
+    void connect().catch(() => { /* 已写入 state.error */ });
   }
 
   function waitForReply(requestId, seconds) {
