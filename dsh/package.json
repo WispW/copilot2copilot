@@ -1,6 +1,6 @@
 {
   "name": "@local/copilot2copilot-dsh",
-  "version": "2026.10.23",
+  "version": "2026.10.26",
   "private": true,
   "type": "module",
   "description": "Copilot2Copilot bridge for DeepSeek Harness: relay client, c2c_* tools, and a Web UI panel.",
