@@ -11,11 +11,13 @@ import {
   createReadStream,
   constants as FS_CONSTANTS,
   copyFileSync,
+  chmodSync,
   linkSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   rmSync,
   unlinkSync,
@@ -273,6 +275,118 @@ export function apply(ctx, config = {}) {
         // 目录不可建时由实际发送时给出错误
       }
     }
+  }
+
+  /** 面板可编辑的配置（不含明文令牌/密码），与 cordis.patch.yml 解耦、便于运行时修改。 */
+  function configFilePath() {
+    return join(channelDir(), 'config.json');
+  }
+
+  function applySettings(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return '配置格式不正确';
+    if (typeof input.relayUrl === 'string') {
+      let url = input.relayUrl.trim();
+      if (url) {
+        if (/^https?:\/\//i.test(url)) url = url.replace(/^http/i, 'ws');
+        if (!/^wss?:\/\//i.test(url)) url = 'ws://' + url;
+        if (url.length > 300) return '中继地址过长';
+        cfg.relayUrl = url.replace(/\/+$/, '');
+      } else {
+        cfg.relayUrl = '';
+      }
+    }
+    if (typeof input.id === 'string') {
+      const id = input.id.trim().slice(0, 64);
+      if (id === 'server') return 'id 不能使用保留地址 server';
+      cfg.id = id;
+    }
+    if (typeof input.role === 'string') cfg.role = input.role.trim().slice(0, 200);
+    if (typeof input.scope === 'string') cfg.scope = input.scope.trim().slice(0, 200);
+    if (typeof input.roomName === 'string') cfg.roomName = input.roomName.trim().slice(0, 32);
+    if (typeof input.roomPassword === 'string' && input.roomPassword) {
+      cfg.roomPassword = input.roomPassword.slice(0, 128);
+    }
+    if (typeof input.token === 'string' && input.token.trim()) {
+      cfg.token = input.token.trim();
+      cfg.tokenFile = '';
+    }
+    if (typeof input.tokenFile === 'string') cfg.tokenFile = input.tokenFile.trim().slice(0, 300);
+    if (typeof input.adminToken === 'string' && input.adminToken.trim()) {
+      cfg.adminToken = input.adminToken.trim();
+    }
+    if (typeof input.autoConnect === 'boolean') cfg.autoConnect = input.autoConnect;
+    if (input.waitSeconds !== undefined) {
+      const seconds = Number(input.waitSeconds);
+      if (!Number.isFinite(seconds) || seconds < 1 || seconds > 180) return '等待秒数需在 1~180 之间';
+      cfg.waitSeconds = Math.round(seconds);
+    }
+    if (Array.isArray(input.sendFileRoots)) {
+      cfg.sendFileRoots = input.sendFileRoots
+        .filter((item) => typeof item === 'string' && item.trim())
+        .map((item) => item.trim())
+        .slice(0, 20);
+    }
+    if (typeof input.allowSendAnyFile === 'boolean') cfg.allowSendAnyFile = input.allowSendAnyFile;
+    return '';
+  }
+
+  /** 面板配置落盘：0600，包含令牌/房间密码；下次启动时覆盖 patch 中的同名项。 */
+  function persistSettings() {
+    const data = {
+      relayUrl: cfg.relayUrl,
+      id: cfg.id,
+      role: cfg.role,
+      scope: cfg.scope,
+      roomName: cfg.roomName,
+      roomPassword: cfg.roomPassword,
+      token: cfg.token,
+      tokenFile: cfg.tokenFile,
+      adminToken: cfg.adminToken,
+      autoConnect: cfg.autoConnect,
+      waitSeconds: cfg.waitSeconds,
+      sendFileRoots: cfg.sendFileRoots,
+      allowSendAnyFile: cfg.allowSendAnyFile,
+    };
+    try {
+      mkdirSync(channelDir(), { recursive: true });
+      const file = configFilePath();
+      const tmp = file + '.tmp';
+      writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
+      chmodSync(tmp, 0o600);
+      renameSync(tmp, file);
+      return '';
+    } catch (err) {
+      const message = '保存面板配置失败：' + (err && err.message ? err.message : String(err));
+      state.error = message;
+      return message;
+    }
+  }
+
+  function loadSavedSettings() {
+    try {
+      const saved = JSON.parse(readFileSync(configFilePath(), 'utf8'));
+      const error = applySettings(saved);
+      if (error) state.error = '读取面板配置失败：' + error;
+    } catch {
+      // 首次运行没有 config.json
+    }
+  }
+
+  function publicConfig() {
+    return {
+      relayUrl: cfg.relayUrl || '',
+      id: cfg.id || '',
+      role: cfg.role || '',
+      scope: cfg.scope || '',
+      roomName: cfg.roomName || '',
+      autoConnect: cfg.autoConnect === true,
+      waitSeconds: Number(cfg.waitSeconds) || 60,
+      hasToken: Boolean(cfg.token || cfg.tokenFile),
+      hasAdminToken: Boolean(cfg.adminToken),
+      hasRoomPassword: Boolean(cfg.roomPassword),
+      sendFileRoots: Array.isArray(cfg.sendFileRoots) ? cfg.sendFileRoots : [],
+      allowSendAnyFile: cfg.allowSendAnyFile === true,
+    };
   }
 
   function safeFileName(raw) {
@@ -714,8 +828,9 @@ export function apply(ctx, config = {}) {
     cleanupStaleTransfers();
     loadFilesIndex();
     ensureSendRoots();
+    loadSavedSettings();
   } catch {
-    // 收件/外发目录不可用时静默跳过
+    // 收件/外发/配置目录不可用时静默跳过
   }
 
   /** 本插件版本：与扩展发版号对齐，中继按它做版本门禁。 */
@@ -729,14 +844,25 @@ export function apply(ctx, config = {}) {
   }
 
   async function fetchRelayVersion() {
+    if (!cfg.relayUrl) {
+      state.relayVersion = '';
+      state.relayProtocol = 0;
+      return '';
+    }
     const base = toHttpUrl(cfg.relayUrl);
     try {
       const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(5000) });
       const body = await res.json();
-      state.relayVersion = typeof body.version === 'string' ? body.version : '';
-      state.relayProtocol = typeof body.protocol === 'number' ? body.protocol : 0;
+      if (body && body.status === 'ok' && typeof body.protocol === 'number') {
+        state.relayVersion = typeof body.version === 'string' ? body.version : '';
+        state.relayProtocol = body.protocol;
+      } else {
+        state.relayVersion = '';
+        state.relayProtocol = 0;
+      }
     } catch {
-      state.relayVersion = cfg.clientVersion || '';
+      state.relayVersion = '';
+      state.relayProtocol = 0;
     }
     return state.relayVersion;
   }
@@ -877,7 +1003,9 @@ export function apply(ctx, config = {}) {
       state.error = err && err.message ? err.message : String(err);
     });
     ws.on('close', (code, reason) => {
-      if (socket === ws) socket = null;
+      // 已被新连接替换 / 主动断开：旧 socket 的迟到 close 不能污染当前会话
+      if (socket !== ws) return;
+      socket = null;
       state.peers = [];
       abortAllTransfers('连接已断开');
       const detail = `连接关闭 code=${code}${reason ? ` ${String(reason)}` : ''}`;
@@ -900,6 +1028,22 @@ export function apply(ctx, config = {}) {
       try { ws.close(1000, 'dsh disconnect'); } catch { /* ignore */ }
     }
     setStatus('offline', '已断开');
+  }
+
+  /** 面板保存配置后重连：先停掉旧连接与重连计划，再用新配置发起一次连接。 */
+  function reconnectFromConfig() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnectAttempt = 0;
+    const ws = socket;
+    socket = null;
+    if (ws) {
+      try { ws.close(1000, 'config changed'); } catch { /* ignore */ }
+    }
+    setStatus('connecting', '配置已更新，正在连接');
+    void connect();
   }
 
   function waitForReply(requestId, seconds) {
@@ -1178,6 +1322,35 @@ export function apply(ctx, config = {}) {
     },
   }));
 
+  function sendJson(res, status, payload) {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(payload));
+  }
+
+  function readJsonBody(req, limit = 64 * 1024) {
+    return new Promise((resolveBody, rejectBody) => {
+      let size = 0;
+      const chunks = [];
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > limit) {
+          rejectBody(new Error('请求体过大'));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on('end', () => {
+        try {
+          resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+        } catch {
+          rejectBody(new Error('请求体不是合法 JSON'));
+        }
+      });
+      req.on('error', rejectBody);
+    });
+  }
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/copilot2copilot/state',
@@ -1187,6 +1360,8 @@ export function apply(ctx, config = {}) {
         self: self(),
         relayUrl: cfg.relayUrl,
         configured: Boolean(cfg.relayUrl && cfg.id),
+        pluginVersion: pluginVersion(),
+        config: publicConfig(),
         files: state.files.slice(0, 50),
         inbox: state.inbox.slice(0, 50).map((item) => ({
           kind: item.kind,
@@ -1200,6 +1375,163 @@ export function apply(ctx, config = {}) {
       });
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(body);
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/config',
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        sendJson(res, 200, { config: publicConfig() });
+        return;
+      }
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: '只支持 GET / POST' });
+        return;
+      }
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : '请求体读取失败' });
+        return;
+      }
+      const backup = { ...cfg };
+      const error = applySettings(body);
+      if (error) {
+        Object.assign(cfg, backup);
+        sendJson(res, 400, { error });
+        return;
+      }
+      const saveError = persistSettings();
+      if (saveError) {
+        sendJson(res, 500, { error: saveError });
+        return;
+      }
+      reconnectFromConfig();
+      sendJson(res, 200, { ok: true, config: publicConfig() });
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/connect',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: '只支持 POST' });
+        return;
+      }
+      if (!cfg.relayUrl || !cfg.id) {
+        sendJson(res, 400, { error: '尚未填写中继地址或档案 id' });
+        return;
+      }
+      reconnectFromConfig();
+      sendJson(res, 200, { ok: true });
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/disconnect',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: '只支持 POST' });
+        return;
+      }
+      disconnect();
+      sendJson(res, 200, { ok: true });
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/room',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: '只支持 POST' });
+        return;
+      }
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : '请求体读取失败' });
+        return;
+      }
+      const op = String(body.op || '');
+      if (!op) {
+        sendJson(res, 400, { error: '缺少 op' });
+        return;
+      }
+      const result = await controlOp('room', op, body.payload || {});
+      if (result.ok) {
+        const list = await controlOp('room', 'list');
+        if (list.ok && list.payload) applyRooms(list.payload.rooms);
+      }
+      sendJson(res, result.ok ? 200 : 400, { ok: result.ok, payload: result.payload, error: result.error });
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/memory',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') {
+        sendJson(res, 405, { error: '只支持 POST' });
+        return;
+      }
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (err) {
+        sendJson(res, 400, { error: err && err.message ? err.message : '请求体读取失败' });
+        return;
+      }
+      const op = String(body.op || '');
+      if (!op) {
+        sendJson(res, 400, { error: '缺少 op' });
+        return;
+      }
+      const result = await controlOp('memory', op, body.payload || {});
+      sendJson(res, result.ok ? 200 : 400, { ok: result.ok, payload: result.payload, error: result.error });
+    },
+  }));
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/copilot2copilot/admin',
+    handler: async (req, res) => {
+      if (!cfg.adminToken) {
+        sendJson(res, 400, { ok: false, error: '尚未配置中继管理令牌' });
+        return;
+      }
+      let op = 'list';
+      let payload = {};
+      if (req.method === 'POST') {
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch (err) {
+          sendJson(res, 400, { ok: false, error: err && err.message ? err.message : '请求体读取失败' });
+          return;
+        }
+        op = String(body.op || '');
+        payload = body.payload || {};
+        if (!op) {
+          sendJson(res, 400, { ok: false, error: '缺少 op' });
+          return;
+        }
+      } else if (req.method !== 'GET') {
+        sendJson(res, 405, { error: '只支持 GET / POST' });
+        return;
+      }
+      const result = await controlOp('admin', op, payload);
+      if (result.ok && op !== 'list') {
+        const list = await controlOp('room', 'list');
+        if (list.ok && list.payload) applyRooms(list.payload.rooms);
+      }
+      sendJson(res, result.ok ? 200 : 400, { ok: result.ok, payload: result.payload, error: result.error });
     },
   }));
 }

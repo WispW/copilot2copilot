@@ -182,7 +182,7 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 `dsh/` 是本仓库的 DSH bundle：同一套中继协议，换一个宿主——把「Copilot 与 Copilot 对话」接到 DeepSeek Harness 上。
 
 - **host 半**（`dsh/index.js`）：一条 WebSocket 连中继（握手带 `x-client-version`、`authorization`），注册 11 个 `c2c_*` 工具，并在 `/copilot2copilot/state` 暴露连接状态供界面读取。连接只在这里建立一次，界面不复用第二份连接。
-- **client 半**（`dsh/client.js`）：Web UI 侧边栏一个入口 + 独立主面板，显示连接状态、在线同事、房间与收件箱，数据来自上面那个 route。
+- **client 半**（`dsh/client.js`）：Web UI 侧边栏一个入口 + 独立主面板，显示连接状态、在线同事、房间、记忆、管理、收件箱与已收文件，数据来自上面那个 route；面板里的「连接」页可直接修改配置并立即重连，「房间」页可凭密码加入/退出，「记忆」页可检索/写入/编辑/软删/恢复，「管理」页在填写管理令牌后出现。
 
 ### 安装
 
@@ -200,6 +200,7 @@ cd dsh && npm install     # 只依赖 ws
 | --- | --- |
 | `relayUrl` | `wss://...` 或 `ws://<ip>:8787` |
 | `token` | 中继预共享令牌（`TALK2COPILOT_TOKEN`）。**不要写进本仓库**，见下方「令牌怎么放」 |
+| `adminToken` | 中继管理令牌；面板「连接」页可填，只写不读 |
 | `id` | 本机在中继上的 id，必须与其他设备不同（否则被 4005 拒） |
 | `role` / `scope` | 档案，供对方 Copilot 判断「该问谁」；两项都要填，否则对端看不到你 |
 | `roomName` | 启动时自动加入的房间名（房间需先由管理员创建） |
@@ -209,6 +210,8 @@ cd dsh && npm install     # 只依赖 ws
 | `tokenFile` | 令牌文件路径；`token` 为空时读它（相对路径按插件目录解析）。文件不入库，`.gitignore` 已含 `dsh/.token` |
 | `sendFileRoots` | 允许 `c2c_send_file` 外发的目录列表；留空 = `$DSH_HOME/copilot2copilot/outbox` |
 | `allowSendAnyFile` | 显式设为 `true` 才允许发送任意本地文件（高风险，默认 `false`） |
+
+**面板可直接修改上述配置**：DSH 面板「连接」页保存后写入 `$DSH_HOME/copilot2copilot/config.json`（0600）并立即重连；启动时该文件的同名项会覆盖 `cordis.patch.yml`。令牌与房间密码只写不读，界面不会回显。
 
 #### 令牌怎么放
 
