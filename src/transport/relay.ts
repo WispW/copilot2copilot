@@ -246,7 +246,11 @@ export class RelayTransport implements Transport {
     }
     const wsUrl = `${url.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(myId)}`;
     // 版本门禁：上报扩展版本（中继按它决定是否放行）；管理令牌可选，错误不影响普通连接
-    const headers: Record<string, string> = { 'x-client-version': this.store.extensionVersion };
+    const headers: Record<string, string> = {
+      'x-client-version': this.store.extensionVersion,
+      // 设备类型：中继据此标注设备、拒绝对人工终端派发写任务（缺省视为 extension）
+      'x-client-kind': 'extension',
+    };
     if (this.token) {
       headers.authorization = `Bearer ${this.token}`;
     }

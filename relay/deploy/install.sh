@@ -85,10 +85,23 @@ if [[ -f "$ENV_FILE" ]]; then
     printf '\n# 管理令牌（安装脚本在升级时自动补充）：在扩展「连接 → 中继管理令牌」填入同一字符串\nTALK2COPILOT_ADMIN_TOKEN=%s\n' "$admin_token" >> "$ENV_FILE"
     echo "已为既有配置补充管理令牌（查看：sudo cat $ENV_FILE）"
   fi
+  # 手机专用令牌：键缺失或值为空都要补——模板里的空值会让 mobileEnabled=false 且脚本无提示
+  mobile_current="$(grep '^TALK2COPILOT_MOBILE_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  if [[ -z "$mobile_current" ]]; then
+    mobile_token="${TALK2COPILOT_MOBILE_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
+    if grep -q '^TALK2COPILOT_MOBILE_TOKEN=' "$ENV_FILE"; then
+      sed -i "s|^TALK2COPILOT_MOBILE_TOKEN=.*|TALK2COPILOT_MOBILE_TOKEN=${mobile_token}|" "$ENV_FILE"
+      echo "已补齐空的手机专用令牌（查看：sudo cat $ENV_FILE）"
+    else
+      printf '\n# 手机专用令牌（安装脚本在升级时自动补充）：在手机 App「设置 → 手机专用令牌」填入同一字符串\nTALK2COPILOT_MOBILE_TOKEN=%s\n' "$mobile_token" >> "$ENV_FILE"
+      echo "已为既有配置补充手机专用令牌（查看：sudo cat $ENV_FILE）"
+    fi
+  fi
 else
   umask 077
   token="${TALK2COPILOT_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
   admin_token="${TALK2COPILOT_ADMIN_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
+  mobile_token="${TALK2COPILOT_MOBILE_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
   cat > "$ENV_FILE" <<EOF
 # talk2copilot 中继服务配置。改动后执行：systemctl restart ${UNIT_NAME}
 PORT=8787
@@ -96,10 +109,12 @@ HOST=0.0.0.0
 TALK2COPILOT_TOKEN=${token}
 # 管理令牌：在扩展配置界面「连接 → 中继管理令牌」填入同一字符串即可获得管理权限
 TALK2COPILOT_ADMIN_TOKEN=${admin_token}
+# 手机专用令牌：手机端以人工终端接入时必填（中继据此签发 mobile 身份）
+TALK2COPILOT_MOBILE_TOKEN=${mobile_token}
 LOG_LEVEL=info
 EOF
   chmod 600 "$ENV_FILE"
-  echo "已生成预共享密码与管理令牌，查看：sudo cat $ENV_FILE"
+  echo "已生成预共享密码、管理令牌与手机专用令牌，查看：sudo cat $ENV_FILE"
 fi
 
 echo "[5/6] 安装并启动 systemd 服务"

@@ -9,6 +9,8 @@
  *   HOST                        监听地址，默认 0.0.0.0；置于反向代理 / 隧道之后建议 127.0.0.1
  *   TALK2COPILOT_TOKEN          预共享密码；设置后客户端必须带 Authorization: Bearer <token>
  *   TALK2COPILOT_ADMIN_TOKEN    管理令牌；客户端在握手头 x-admin-token 中携带，通过即获得管理权限
+ *   TALK2COPILOT_MOBILE_TOKEN   手机专用令牌；x-client-kind: mobile 的连接必须在 x-mobile-token 携带它，
+ *                               为空则手机端无法接入（4009）。用于把「人工终端」从中继自报变成签发身份
  *   TALK2COPILOT_BAN_FILE       封禁名单落盘路径；默认 systemd STATE_DIRECTORY 或脚本目录下的 bans.json
  *   TALK2COPILOT_ROOMS_FILE     房间 / 分类状态落盘路径；默认同目录下的 rooms.json
  *   TALK2COPILOT_MEMORY_FILE    房间共享记忆落盘路径；默认同目录下的 memory.json
@@ -24,7 +26,8 @@
  *       与中继 RELAY_VERSION 不一致即拒绝（4008）——中继与扩展必须同步升级。
  * 关闭码：4001 令牌不正确；4002 未声明 id；4003 id 为保留地址 server；4005 同 id 已被在线连接占用
  *       （不做顶替，旧连接失去心跳后由新连接接管）；4006 被管理员踢出；4007 被封禁；4008 版本门禁；
- *       1001 服务关闭；1011 心跳超时（先发关闭帧，2s 后强杀）。客户端据此细分提示并决定是否自动重连。
+ *       4009 手机专用令牌缺失或不正确（含中继未配置该令牌）；1001 服务关闭；1011 心跳超时
+ *       （先发关闭帧，2s 后强杀）。客户端据此细分提示并决定是否自动重连。
  * 房间（可见域）：房间列表（名称 / 分类 / 人数 / 是否有密码）对所有设备可见，凭密码加入；
  *       成员明细仅成员与管理员可见。设备只能"看到"（presence）并只能与同房间成员通信
  *       （转发前强制校验，管理令牌不豁免）；未加入任何房间的设备与所有人互相不可见。
@@ -56,13 +59,27 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 /** 中继版本：必须与仓库 package.json 的 version 同步（发版时一起改；install.sh 会比对 /healthz 告警） */
-const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.26';
+const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.30';
 /** 协议号：与扩展 src/protocol.ts 的 PROTOCOL_VERSION 对应，仅供探针展示 */
+// 协议 7：新增客户端类型（握手头 x-client-kind）——标注设备类型、拒绝对人工终端派发写任务，
+//        非扩展客户端改按协议号门禁（x-protocol），中继升级版本时手机端无需跟着发版
 // 协议 6：记忆严格按房间隔离，并新增 memory-event（中继在记忆变更后向房间成员下发通知）
 // 协议 5：新增信任授权通道（成员上报"我授权谁对我执行写操作"，中继下发"我被谁授权"）
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 /** 管理令牌：为空时管理功能整体不可用（不给任何人管理权限） */
 const ADMIN_TOKEN = process.env.TALK2COPILOT_ADMIN_TOKEN || '';
+/**
+ * 手机专用令牌：手机端（x-client-kind: mobile）必须额外携带 x-mobile-token。
+ * 未配置时手机接入整体关闭（这类设备按普通扩展处理会绕过人工终端语义，故直接拒绝）。
+ * 目的是把「人工终端」从自报声明变成中继签发的身份，避免持普通令牌的客户端冒充手机
+ * 获得默认写权限。
+ */
+const MOBILE_TOKEN = process.env.TALK2COPILOT_MOBILE_TOKEN || '';
+/** 见过并校验通过的手机设备 id：转发写任务时按它拦截，覆盖离线目标（离线时 peers 里查不到） */
+const mobileIds = new Set();
+/** 手机设备集合落盘路径：重启后仍能拦住离线手机的写任务，否则会进队列并在重连时补投 */
+const MOBILE_FILE = process.env.TALK2COPILOT_MOBILE_FILE
+  || path.join(process.env.STATE_DIRECTORY || __dirname, 'mobile-ids.json');
 /** 封禁名单落盘路径：systemd 单元通过 StateDirectory 提供可写目录 */
 const BAN_FILE = process.env.TALK2COPILOT_BAN_FILE
   || path.join(process.env.STATE_DIRECTORY || __dirname, 'bans.json');
@@ -253,6 +270,16 @@ function normalizeVersion(value) {
   return String(value || '').trim().replace(/-test[\d.]+$/i, '');
 }
 
+/**
+ * 客户端类型（握手头 x-client-kind）：未知/缺省一律按 extension 处理，
+ * 这样旧客户端与拼错头的客户端仍走版本号门禁，不会被意外放宽。
+ */
+const CLIENT_KINDS = new Set(['extension', 'dsh', 'mobile']);
+function normalizeClientKind(value) {
+  const kind = String(value || '').trim().toLowerCase();
+  return CLIENT_KINDS.has(kind) ? kind : 'extension';
+}
+
 function loadBans() {
   try {
     const raw = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
@@ -274,6 +301,35 @@ function saveBans() {
     fs.writeFileSync(BAN_FILE, `${JSON.stringify([...banned], null, 2)}\n`);
   } catch (err) {
     log('warn', '封禁名单写入失败（本次仅内存生效，重启会丢失）', { file: BAN_FILE, error: err.message });
+  }
+}
+
+/** 载入手机设备集合（重启后离线手机的写任务仍能被拦截） */
+function loadMobileIds() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(MOBILE_FILE, 'utf8'));
+    if (Array.isArray(raw)) {
+      for (const id of raw) {
+        if (typeof id === 'string' && id) {
+          mobileIds.add(id);
+        }
+      }
+    }
+    log('info', '已载入手机设备集合', { count: mobileIds.size, file: MOBILE_FILE });
+  } catch {
+    // 文件不存在：首次启动的正常路径
+  }
+}
+
+function saveMobileIds() {
+  try {
+    const tmp = `${MOBILE_FILE}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify([...mobileIds], null, 2)}\n`);
+    fs.renameSync(tmp, MOBILE_FILE);
+  } catch (err) {
+    log('warn', '手机设备集合写入失败（本次仅内存生效，重启后离线手机的写任务可能被补投）', {
+      file: MOBILE_FILE, error: err.message,
+    });
   }
 }
 
@@ -1348,6 +1404,7 @@ function handleAdminOp(ws, id, env) {
       const devices = [...peers.entries()].map(([peerId, peerWs]) => ({
         id: peerId,
         version: peerWs.clientVersion || '(未上报)',
+        kind: peerWs.clientKind || 'extension',
         admin: peerWs.isAdmin === true,
         roomIds: [...rooms.values()].filter(room => room.members.has(peerId)).map(room => room.id),
       }));
@@ -1802,6 +1859,7 @@ const server = http.createServer((req, res) => {
       queued: queuedCount(),
       tokenRequired: TOKEN !== '',
       adminEnabled: ADMIN_TOKEN !== '',
+      mobileEnabled: MOBILE_TOKEN !== '',
     });
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(`${body}\n`);
@@ -1842,6 +1900,8 @@ wss.on('connection', (ws, req) => {
   const id = url.searchParams.get('id') || '';
   const auth = req.headers.authorization || '';
   const clientVersion = String(req.headers['x-client-version'] || '');
+  const clientKind = normalizeClientKind(req.headers['x-client-kind']);
+  const clientProtocol = Number.parseInt(String(req.headers['x-protocol'] || ''), 10);
   const adminHeader = String(req.headers['x-admin-token'] || '');
   // 诊断用：真实客户端 IP（隧道后面 socket 对端永远是 127.0.0.1）、id 与连接建立时间
   ws.clientIp = clientIpOf(req);
@@ -1853,12 +1913,39 @@ wss.on('connection', (ws, req) => {
     ws.close(4001, 'unauthorized');
     return;
   }
-  // 版本门禁：扩展必须与中继同步升级（-testN / -testN.M 后缀忽略），否则拒绝接入
-  if (normalizeVersion(clientVersion) !== normalizeVersion(RELAY_VERSION)) {
-    log('warn', '拒绝连接：扩展版本与中继不一致', {
-      id, relayVersion: RELAY_VERSION, clientVersion: clientVersion || '(未上报)', ip: ws.clientIp,
+  // 手机专用令牌：kind=mobile 必须由中继签发（未配置时手机接入整体关闭），
+  // 避免持普通令牌的客户端自称 mobile 获取人工终端特权（默认写权限）
+  let mobileVerified = false;
+  if (clientKind === 'mobile') {
+    if (!MOBILE_TOKEN) {
+      log('warn', '拒绝连接：中继未配置手机专用令牌（TALK2COPILOT_MOBILE_TOKEN）', { id, ip: ws.clientIp });
+      ws.close(4009, 'mobile access disabled');
+      return;
+    }
+    const mobileHeader = String(req.headers['x-mobile-token'] || '');
+    if (!mobileHeader || !timingSafeEqualStr(mobileHeader, MOBILE_TOKEN)) {
+      log('warn', '拒绝连接：手机专用令牌不正确', { id, ip: ws.clientIp });
+      ws.close(4009, 'invalid mobile token');
+      return;
+    }
+    mobileVerified = true;
+  }
+  // 接入门禁：
+  // - extension / dsh：版本号必须与中继一致（-testN / -testN.M 后缀忽略），双方同步升级
+  // - mobile 等第三方客户端：改按协议号（x-protocol）门禁，中继升级版本号时客户端无需重发
+  if (clientKind === 'extension' || clientKind === 'dsh') {
+    if (normalizeVersion(clientVersion) !== normalizeVersion(RELAY_VERSION)) {
+      log('warn', '拒绝连接：扩展版本与中继不一致', {
+        id, kind: clientKind, relayVersion: RELAY_VERSION, clientVersion: clientVersion || '(未上报)', ip: ws.clientIp,
+      });
+      ws.close(4008, `version mismatch: relay ${RELAY_VERSION}`);
+      return;
+    }
+  } else if (clientProtocol !== PROTOCOL) {
+    log('warn', '拒绝连接：客户端协议号与中继不一致', {
+      id, kind: clientKind, relayProtocol: PROTOCOL, clientProtocol: Number.isNaN(clientProtocol) ? '(未上报)' : clientProtocol, ip: ws.clientIp,
     });
-    ws.close(4008, `version mismatch: relay ${RELAY_VERSION}`);
+    ws.close(4008, `protocol mismatch: relay ${PROTOCOL}`);
     return;
   }
   if (!id) {
@@ -1879,6 +1966,7 @@ wss.on('connection', (ws, req) => {
   }
   // 管理令牌：错误不影响普通连接，只是该连接不具备管理权限
   ws.clientVersion = clientVersion;
+  ws.clientKind = clientKind;
   ws.isAdmin = ADMIN_TOKEN !== '' && adminHeader !== '' && timingSafeEqualStr(adminHeader, ADMIN_TOKEN);
 
   const previous = peers.get(id);
@@ -1900,8 +1988,17 @@ wss.on('connection', (ws, req) => {
     log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });
   }
   peers.set(id, ws);
+  // 按当前连接的类型覆盖记录：同一 id 改为 extension 接入后，不再按人工终端处理
+  if (mobileVerified !== mobileIds.has(id)) {
+    if (mobileVerified) {
+      mobileIds.add(id);
+    } else {
+      mobileIds.delete(id);
+    }
+    saveMobileIds();
+  }
   log('info', `${id} 已上线`, {
-    online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', admin: ws.isAdmin === true,
+    online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', kind: clientKind, admin: ws.isAdmin === true,
   });
   broadcastTrustState();
 
@@ -1951,11 +2048,13 @@ wss.on('connection', (ws, req) => {
       if (env.profile && typeof env.profile === 'object') {
         const role = (typeof env.profile.role === 'string' ? env.profile.role : '').slice(0, 200);
         const scope = (typeof env.profile.scope === 'string' ? env.profile.scope : '').slice(0, 200);
+        // 设备类型以连接握手为准（客户端自报的 profile.kind 不可信，防止冒充人工终端逃避任务拦截）
+        const kind = ws.clientKind || 'extension';
         const previous = profiles.get(id);
         // 值未变化就不广播，避免客户端重复上报把全量目录刷爆
-        if (!previous || previous.role !== role || previous.scope !== scope) {
-          profiles.set(id, { id, role, scope });
-          log('info', `${id} 已上报档案`, { roleChars: role.length, scopeChars: scope.length, total: profiles.size });
+        if (!previous || previous.role !== role || previous.scope !== scope || previous.kind !== kind) {
+          profiles.set(id, { id, role, scope, kind });
+          log('info', `${id} 已上报档案`, { roleChars: role.length, scopeChars: scope.length, kind, total: profiles.size });
           broadcastPresence();
         }
       }
@@ -1982,6 +2081,22 @@ wss.on('connection', (ws, req) => {
           error: `与 ${env.to} 没有共同房间，消息未送达`,
         });
       }
+      return;
+    }
+    // 人工终端（手机）不接受写任务：拒转 intent=task 并向发送方回执；普通消息照常投递（人可以看到并人工回复）。
+    // 用 mobileIds 而不是 peers：目标离线时 peers 里查不到，否则写任务会进离线队列、重连时补投
+    if (env.kind === 'message' && env.intent === 'task' && mobileIds.has(env.to)) {
+      log('info', '拒绝转发：目标是人工终端，不接受写任务', { from: id, to: env.to, online: peers.has(env.to) });
+      send(ws, {
+        v: 1,
+        kind: 'error',
+        id: `err-${++seq}`,
+        from: 'server',
+        to: id,
+        ts: Date.now(),
+        refId: typeof env.id === 'string' ? env.id : '',
+        error: `${env.to} 是人工终端（手机），不接受写任务；请改为只问信息，或把要改的内容交给对方本人。`,
+      });
       return;
     }
     // 身份绑定：from 一律改写为连接的真实 id，并丢弃客户端自带的档案——
@@ -2112,6 +2227,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 loadBans();
 loadState();
 loadMemory();
+loadMobileIds();
 
 server.listen(PORT, HOST, () => {
   log('info', '中继服务已启动', {

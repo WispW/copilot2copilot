@@ -566,6 +566,12 @@ export class ConsolePanel {
         this.postState();
         break;
       }
+      case 'setTrustMobileWrite': {
+        await this.store.setTrustMobileWrite(m.value === true);
+        log(`[panel] 人工终端默认写授权${m.value === true ? '已开启' : '已关闭'}`);
+        this.postState();
+        break;
+      }
       case 'useRelay': {
         const url = String(m.url ?? '');
         if (!url) {

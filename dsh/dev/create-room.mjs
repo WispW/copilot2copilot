@@ -2,7 +2,7 @@ import { WebSocket } from 'ws';
 
 // 本地联调脚本：令牌与版本从环境变量读取，脚本里不留明文。
 //   $env:C2C_TOKEN = '<中继令牌>'; node dsh\dev\create-room.mjs
-const VERSION = process.env.C2C_VERSION || '2026.10.26';
+const VERSION = process.env.C2C_VERSION || '2026.10.30';
 const TOKEN = process.env.C2C_TOKEN || '';
 const ADMIN_TOKEN = process.env.C2C_ADMIN_TOKEN || '';
 

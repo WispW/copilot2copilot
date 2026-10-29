@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Copilot2Copilot</string>
+    <string name="conn_online">已连接</string>
+    <string name="conn_connecting">连接中…</string>
+    <string name="conn_offline">未连接</string>
+    <string name="channel_name">连接状态</string>
+    <string name="channel_messages">新消息</string>
+</resources>

@@ -4,6 +4,15 @@ import type { Snapshot } from '../state';
 import type { TabId } from '../app';
 import { AdminMemorySection } from './adminMemory';
 
+/** 设备类型标签：中继按握手头 x-client-kind 标注，旧客户端缺省为 extension */
+function deviceKindLabel(kind?: string): string {
+  switch (kind) {
+    case 'mobile': return '手机';
+    case 'dsh': return 'DSH';
+    default: return '扩展';
+  }
+}
+
 export function AdminPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId): void }) {
   const state = snap.state;
   if (!state) {
@@ -55,7 +64,8 @@ export function AdminPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
           <div class="peer" key={device.id}>
             <div class="peer-head">
               <b>{device.id}</b>
-              <span class="hint">扩展 {device.version}</span>
+              <span class="hint">{deviceKindLabel(device.kind)} {device.version}</span>
+              {device.kind === 'mobile' && <span class="badge">人工终端</span>}
               {device.admin && <span class="hint">管理员</span>}
               <span class="grow"></span>
               <ConfirmButton

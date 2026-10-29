@@ -41,13 +41,25 @@ export function BehaviorPage({ snap }: { snap: Snapshot }) {
           />
           写任务开始 / 结束时发系统通知
         </label>
+        <label class="row" title="人工终端指设备类型为「手机」的同事（你本人的手机）。开启时它派发的写任务无需逐人授权；关闭后与普通同事一致">
+          <input
+            type="checkbox"
+            checked={snap.state?.config.behavior.trustMobileWrite !== false}
+            onChange={e => post({ type: 'setTrustMobileWrite', value: e.currentTarget.checked })}
+          />
+          默认信任我的手机（人工终端）派发的写任务
+        </label>
+        <Hint>
+          手机是以 <code>kind=mobile</code> 接入的人工终端：默认允许它派发写任务（仍受《通信约定（读写版）》的红线约束）。
+          该信任只对<strong>同房间</strong>且以手机类型接入的设备生效；不需要时可在上面关闭。
+        </Hint>
       </Section>
 
       <Section title="维护">
         <div class="row-wrap">
           <button onClick={() => post({ type: 'cancelAllExecGrants' })}>取消所有写授权</button>
         </div>
-        <Hint>取消后，所有同事都只能进行只读问答；需要重新授权时到「Copilot 列表」逐人打开「可执行」。</Hint>
+        <Hint>取消后，普通同事都只能进行只读问答；需要重新授权时到「Copilot 列表」逐人打开「可执行」。人工终端（手机）由上面的默认信任决定，不受此按钮影响。</Hint>
         <div class="row-wrap">
           <button onClick={() => post({ type: 'saveTemplate' })}>把当前角色 / 负责内容存为模板</button>
         </div>
