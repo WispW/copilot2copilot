@@ -57,7 +57,9 @@ class RelayClient(private val scope: CoroutineScope) {
     private val _state = MutableStateFlow(ConnectionState())
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
-    private val _events = MutableSharedFlow<Envelope>(extraBufferCapacity = 128)
+    // replay：前台服务可能先建连并收到消息，界面稍后订阅；给最近的帧留缓冲，避免早期消息丢失。
+    // 历史层按消息 id 去重，重放不会产生重复气泡。
+    private val _events = MutableSharedFlow<Envelope>(replay = 32, extraBufferCapacity = 128)
     val events: SharedFlow<Envelope> = _events.asSharedFlow()
 
     private var cfg: C2CConfig? = null
@@ -205,7 +207,8 @@ class RelayClient(private val scope: CoroutineScope) {
         val base = normalizeBase(c.relayUrl)
         val health = withContext(Dispatchers.IO) { runCatching { fetchHealth(base) }.getOrNull() }
         if (health == null) {
-            onFatal("无法访问 $base/healthz，请检查地址、网络与中继状态")
+            // 中继重启 / 网络瞬断都表现为探测失败：走退避重试，不能停在错误态
+            scheduleReconnect("无法访问 $base/healthz，请检查地址与网络")
             return
         }
         val relayVersion = health.optString("version")
@@ -214,12 +217,18 @@ class RelayClient(private val scope: CoroutineScope) {
             onFatal("中继协议 v$protocol 与本 App 支持的 v${C2C.PROTOCOL_VERSION} 不一致，请升级对应一方")
             return
         }
+        if (!health.optBoolean("mobileEnabled", true)) {
+            onFatal("中继未开启手机接入：请在中继配置 TALK2COPILOT_MOBILE_TOKEN，并在本页填写同一令牌")
+            return
+        }
         val wsUrl = "${wsBase(base)}/ws?id=${URLEncoder.encode(c.id, "UTF-8")}"
         val request = Request.Builder()
             .url(wsUrl)
             .header("authorization", "Bearer ${c.token}")
             .header("x-client-kind", C2C.CLIENT_KIND)
             .header("x-protocol", C2C.PROTOCOL_VERSION.toString())
+            // 手机专用令牌：中继据此签发 mobile 身份（未配置或错误会被 4009 拒绝）
+            .header("x-mobile-token", c.mobileToken)
             // 仅供中继管理页展示；mobile 的门禁看的是 x-protocol，不是版本号
             .header("x-client-version", C2C.APP_VERSION)
             .build()
@@ -306,7 +315,7 @@ class RelayClient(private val scope: CoroutineScope) {
 
     companion object {
         /** 需要人工处理的关闭码：不自动重连，直接给下一步提示 */
-        private val FATAL_CODES = setOf(4001, 4002, 4003, 4005, 4006, 4007, 4008)
+        private val FATAL_CODES = setOf(4001, 4002, 4003, 4005, 4006, 4007, 4008, 4009)
 
         private fun describeClose(code: Int): String = when (code) {
             4001 -> "中继令牌不正确"
@@ -316,6 +325,7 @@ class RelayClient(private val scope: CoroutineScope) {
             4006 -> "已被中继管理员踢出"
             4007 -> "已被中继封禁"
             4008 -> "版本 / 协议不一致"
+            4009 -> "手机专用令牌不正确，或中继未配置手机接入"
             1000 -> "连接已关闭"
             1001 -> "中继正在重启"
             else -> "连接断开"

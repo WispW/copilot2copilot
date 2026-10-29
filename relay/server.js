@@ -9,6 +9,8 @@
  *   HOST                        监听地址，默认 0.0.0.0；置于反向代理 / 隧道之后建议 127.0.0.1
  *   TALK2COPILOT_TOKEN          预共享密码；设置后客户端必须带 Authorization: Bearer <token>
  *   TALK2COPILOT_ADMIN_TOKEN    管理令牌；客户端在握手头 x-admin-token 中携带，通过即获得管理权限
+ *   TALK2COPILOT_MOBILE_TOKEN   手机专用令牌；x-client-kind: mobile 的连接必须在 x-mobile-token 携带它，
+ *                               为空则手机端无法接入（4009）。用于把「人工终端」从中继自报变成签发身份
  *   TALK2COPILOT_BAN_FILE       封禁名单落盘路径；默认 systemd STATE_DIRECTORY 或脚本目录下的 bans.json
  *   TALK2COPILOT_ROOMS_FILE     房间 / 分类状态落盘路径；默认同目录下的 rooms.json
  *   TALK2COPILOT_MEMORY_FILE    房间共享记忆落盘路径；默认同目录下的 memory.json
@@ -24,7 +26,8 @@
  *       与中继 RELAY_VERSION 不一致即拒绝（4008）——中继与扩展必须同步升级。
  * 关闭码：4001 令牌不正确；4002 未声明 id；4003 id 为保留地址 server；4005 同 id 已被在线连接占用
  *       （不做顶替，旧连接失去心跳后由新连接接管）；4006 被管理员踢出；4007 被封禁；4008 版本门禁；
- *       1001 服务关闭；1011 心跳超时（先发关闭帧，2s 后强杀）。客户端据此细分提示并决定是否自动重连。
+ *       4009 手机专用令牌缺失或不正确（含中继未配置该令牌）；1001 服务关闭；1011 心跳超时
+ *       （先发关闭帧，2s 后强杀）。客户端据此细分提示并决定是否自动重连。
  * 房间（可见域）：房间列表（名称 / 分类 / 人数 / 是否有密码）对所有设备可见，凭密码加入；
  *       成员明细仅成员与管理员可见。设备只能"看到"（presence）并只能与同房间成员通信
  *       （转发前强制校验，管理令牌不豁免）；未加入任何房间的设备与所有人互相不可见。
@@ -65,6 +68,15 @@ const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.30';
 const PROTOCOL = 7;
 /** 管理令牌：为空时管理功能整体不可用（不给任何人管理权限） */
 const ADMIN_TOKEN = process.env.TALK2COPILOT_ADMIN_TOKEN || '';
+/**
+ * 手机专用令牌：手机端（x-client-kind: mobile）必须额外携带 x-mobile-token。
+ * 未配置时手机接入整体关闭（这类设备按普通扩展处理会绕过人工终端语义，故直接拒绝）。
+ * 目的是把「人工终端」从自报声明变成中继签发的身份，避免持普通令牌的客户端冒充手机
+ * 获得默认写权限。
+ */
+const MOBILE_TOKEN = process.env.TALK2COPILOT_MOBILE_TOKEN || '';
+/** 见过并校验通过的手机设备 id：转发写任务时按它拦截，覆盖离线目标（离线时 peers 里查不到） */
+const mobileIds = new Set();
 /** 封禁名单落盘路径：systemd 单元通过 StateDirectory 提供可写目录 */
 const BAN_FILE = process.env.TALK2COPILOT_BAN_FILE
   || path.join(process.env.STATE_DIRECTORY || __dirname, 'bans.json');
@@ -1815,6 +1827,7 @@ const server = http.createServer((req, res) => {
       queued: queuedCount(),
       tokenRequired: TOKEN !== '',
       adminEnabled: ADMIN_TOKEN !== '',
+      mobileEnabled: MOBILE_TOKEN !== '',
     });
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(`${body}\n`);
@@ -1867,6 +1880,23 @@ wss.on('connection', (ws, req) => {
     log('warn', '拒绝连接：令牌不正确', { ip: ws.clientIp });
     ws.close(4001, 'unauthorized');
     return;
+  }
+  // 手机专用令牌：kind=mobile 必须由中继签发（未配置时手机接入整体关闭），
+  // 避免持普通令牌的客户端自称 mobile 获取人工终端特权（默认写权限）
+  let mobileVerified = false;
+  if (clientKind === 'mobile') {
+    if (!MOBILE_TOKEN) {
+      log('warn', '拒绝连接：中继未配置手机专用令牌（TALK2COPILOT_MOBILE_TOKEN）', { id, ip: ws.clientIp });
+      ws.close(4009, 'mobile access disabled');
+      return;
+    }
+    const mobileHeader = String(req.headers['x-mobile-token'] || '');
+    if (!mobileHeader || !timingSafeEqualStr(mobileHeader, MOBILE_TOKEN)) {
+      log('warn', '拒绝连接：手机专用令牌不正确', { id, ip: ws.clientIp });
+      ws.close(4009, 'invalid mobile token');
+      return;
+    }
+    mobileVerified = true;
   }
   // 接入门禁：
   // - extension / dsh：版本号必须与中继一致（-testN / -testN.M 后缀忽略），双方同步升级
@@ -1926,6 +1956,10 @@ wss.on('connection', (ws, req) => {
     log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });
   }
   peers.set(id, ws);
+  if (mobileVerified) {
+    // 记住该设备是校验过的手机：离线时也按人工终端处理（写任务不暂存）
+    mobileIds.add(id);
+  }
   log('info', `${id} 已上线`, {
     online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', kind: clientKind, admin: ws.isAdmin === true,
   });
@@ -2012,23 +2046,21 @@ wss.on('connection', (ws, req) => {
       }
       return;
     }
-    // 人工终端（手机）不接受写任务：拒转 intent=task 并向发送方回执；普通消息照常投递（人可以看到并人工回复）
-    if (env.kind === 'message' && env.intent === 'task') {
-      const targetWs = peers.get(env.to);
-      if (targetWs && targetWs.clientKind === 'mobile') {
-        log('info', '拒绝转发：目标是人工终端，不接受写任务', { from: id, to: env.to });
-        send(ws, {
-          v: 1,
-          kind: 'error',
-          id: `err-${++seq}`,
-          from: 'server',
-          to: id,
-          ts: Date.now(),
-          refId: typeof env.id === 'string' ? env.id : '',
-          error: `${env.to} 是人工终端（手机），不接受写任务；请改为只问信息，或把要改的内容交给对方本人。`,
-        });
-        return;
-      }
+    // 人工终端（手机）不接受写任务：拒转 intent=task 并向发送方回执；普通消息照常投递（人可以看到并人工回复）。
+    // 用 mobileIds 而不是 peers：目标离线时 peers 里查不到，否则写任务会进离线队列、重连时补投
+    if (env.kind === 'message' && env.intent === 'task' && mobileIds.has(env.to)) {
+      log('info', '拒绝转发：目标是人工终端，不接受写任务', { from: id, to: env.to, online: peers.has(env.to) });
+      send(ws, {
+        v: 1,
+        kind: 'error',
+        id: `err-${++seq}`,
+        from: 'server',
+        to: id,
+        ts: Date.now(),
+        refId: typeof env.id === 'string' ? env.id : '',
+        error: `${env.to} 是人工终端（手机），不接受写任务；请改为只问信息，或把要改的内容交给对方本人。`,
+      });
+      return;
     }
     // 身份绑定：from 一律改写为连接的真实 id，并丢弃客户端自带的档案——
     // 否则同房间成员可冒充他人（用对方 id 发消息、伪造角色）投递；档案以本连接经 to='server' 上报的为准

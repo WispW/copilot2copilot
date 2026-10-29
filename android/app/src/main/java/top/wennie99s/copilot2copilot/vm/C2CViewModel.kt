@@ -84,7 +84,13 @@ class C2CViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             relay.state.collect { conn ->
-                _state.update { it.copy(conn = conn) }
+                _state.update { current ->
+                    current.copy(
+                        conn = conn,
+                        // 断开后不再显示「在线」绿点：可见性以中继 presence 为准
+                        peers = if (conn.status == ConnStatus.Online) current.peers else emptyMap(),
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -99,7 +105,7 @@ class C2CViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun bootstrap() {
         viewModelScope.launch {
-            history.load()
+            history.ensureLoaded()
             val cfg = configStore.current()
             _state.update { it.copy(config = cfg) }
             relay.updateConfig(cfg)

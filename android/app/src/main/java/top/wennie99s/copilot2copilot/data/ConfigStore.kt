@@ -21,6 +21,8 @@ data class C2CConfig(
     val role: String = "本人手机",
     val scope: String = "人工查看与转发，不提供 AI 答复",
     val token: String = "",
+    /** 手机专用令牌：中继用它签发 mobile 身份（对应 TALK2COPILOT_MOBILE_TOKEN），缺失会被 4009 拒绝 */
+    val mobileToken: String = "",
     val autoConnect: Boolean = true,
 ) {
     /** 能与中继通信的最小条件（令牌由中继侧决定是否必需） */
@@ -36,6 +38,7 @@ class ConfigStore(private val context: Context) {
         val role = stringPreferencesKey("role")
         val scope = stringPreferencesKey("scope")
         val token = stringPreferencesKey("token")
+        val mobileToken = stringPreferencesKey("mobileToken")
         val autoConnect = booleanPreferencesKey("autoConnect")
     }
 
@@ -46,6 +49,7 @@ class ConfigStore(private val context: Context) {
             role = p[Keys.role] ?: C2CConfig().role,
             scope = p[Keys.scope] ?: C2CConfig().scope,
             token = p[Keys.token] ?: "",
+            mobileToken = p[Keys.mobileToken] ?: "",
             autoConnect = p[Keys.autoConnect] ?: true,
         )
     }
@@ -59,6 +63,7 @@ class ConfigStore(private val context: Context) {
             p[Keys.role] = cfg.role.trim()
             p[Keys.scope] = cfg.scope.trim()
             p[Keys.token] = cfg.token
+            p[Keys.mobileToken] = cfg.mobileToken
             p[Keys.autoConnect] = cfg.autoConnect
         }
     }

@@ -1,6 +1,9 @@
 package top.wennie99s.copilot2copilot
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,6 +35,19 @@ class MainActivity : ComponentActivity() {
         }
         // 前台服务保活长连接（Android 8+ 必须显式启动）
         runCatching { ContextCompat.startForegroundService(this, Intent(this, RelayService::class.java)) }
+        requestNotificationPermissionIfNeeded()
+    }
+
+    /** Android 13+ 必须显式申请通知权限，否则未读通知会静默不显示 */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

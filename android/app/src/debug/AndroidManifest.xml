@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 构建允许明文 ws://（内网直连测试用）。
+  release 构建保持系统默认（禁止明文），必须使用 wss://。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

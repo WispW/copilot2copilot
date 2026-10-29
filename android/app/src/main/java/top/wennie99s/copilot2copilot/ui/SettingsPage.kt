@@ -30,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import top.wennie99s.copilot2copilot.data.C2CConfig
 import top.wennie99s.copilot2copilot.net.ConnStatus
@@ -44,18 +45,19 @@ fun SettingsPage(vm: C2CViewModel, modifier: Modifier = Modifier) {
     var id by remember { mutableStateOf("") }
     var role by remember { mutableStateOf("") }
     var scopeText by remember { mutableStateOf("") }
+    // 令牌只写不读：已保存的值不回填，留空表示不修改
     var token by remember { mutableStateOf("") }
+    var mobileToken by remember { mutableStateOf("") }
     var autoConnect by remember { mutableStateOf(true) }
     var dirty by remember { mutableStateOf(false) }
 
-    // 配置异步加载：未编辑前跟随配置；编辑后不被热更新覆盖
+    // 配置异步加载：未编辑前跟随配置；编辑后不被热更新覆盖（令牌不回填）
     LaunchedEffect(state.config, dirty) {
         if (!dirty) {
             relayUrl = state.config.relayUrl
             id = state.config.id
             role = state.config.role
             scopeText = state.config.scope
-            token = state.config.token
             autoConnect = state.config.autoConnect
         }
     }
@@ -118,10 +120,28 @@ fun SettingsPage(vm: C2CViewModel, modifier: Modifier = Modifier) {
         OutlinedTextField(
             value = token,
             onValueChange = { token = it; dirty = true },
-            label = { Text("中继令牌") },
+            label = { Text("中继令牌（可选）") },
             singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
             modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("以明文保存在应用私有存储；不填则尝试匿名连接") },
+            supportingText = { Text(if (state.config.token.isNotBlank()) "已保存；留空表示不修改" else "留空表示匿名连接（中继未设令牌时）") },
+        )
+        OutlinedTextField(
+            value = mobileToken,
+            onValueChange = { mobileToken = it; dirty = true },
+            label = { Text("手机专用令牌（必填）") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth(),
+            supportingText = {
+                Text(
+                    if (state.config.mobileToken.isNotBlank()) {
+                        "已保存；留空表示不修改。对应中继的 TALK2COPILOT_MOBILE_TOKEN"
+                    } else {
+                        "对应中继的 TALK2COPILOT_MOBILE_TOKEN；缺失会被中继以 4009 拒绝"
+                    },
+                )
+            },
         )
         Row(
             Modifier.fillMaxWidth(),
@@ -144,10 +164,14 @@ fun SettingsPage(vm: C2CViewModel, modifier: Modifier = Modifier) {
                             id = id,
                             role = role,
                             scope = scopeText,
-                            token = token,
+                            // 留空表示沿用已保存的令牌
+                            token = token.ifBlank { state.config.token },
+                            mobileToken = mobileToken.ifBlank { state.config.mobileToken },
                             autoConnect = autoConnect,
                         ),
                     )
+                    token = ""
+                    mobileToken = ""
                     dirty = false
                 },
             ) { Text("保存并连接") }

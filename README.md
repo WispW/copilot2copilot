@@ -143,13 +143,13 @@ TALK2COPILOT_TOKEN=<你的密码> node relay/server.js 8787
 
 把 `master` 换成 tag（如 `v0.3.9`）即可固定版本。若目标服务器访问 GitHub 不通，先在能联网的机器上下载该归档再拷过去，按方式二执行。
 
-安装脚本会：**首次安装**时生成随机预共享密码**与管理令牌**写入 `/etc/talk2copilot-relay.env`（权限 600，含 `PORT` / `HOST` / `TALK2COPILOT_TOKEN` / `TALK2COPILOT_ADMIN_TOKEN` / `LOG_LEVEL`，模板见 `relay/deploy/relay.env.example`；已存在则原样保留），创建无登录权限的服务账号 `talk2copilot`，安装并启用 `talk2copilot-relay.service`，最后自查一次 `/healthz`（并比对运行版本与仓库 `package.json` 是否一致）。改完配置执行 `sudo systemctl restart talk2copilot-relay`。
+安装脚本会：**首次安装**时生成随机预共享密码、**管理令牌**与**手机专用令牌**写入 `/etc/talk2copilot-relay.env`（权限 600，含 `PORT` / `HOST` / `TALK2COPILOT_TOKEN` / `TALK2COPILOT_ADMIN_TOKEN` / `TALK2COPILOT_MOBILE_TOKEN` / `LOG_LEVEL`，模板见 `relay/deploy/relay.env.example`；已存在则原样保留，缺的令牌在就地升级时自动补齐），创建无登录权限的服务账号 `talk2copilot`，安装并启用 `talk2copilot-relay.service`，最后自查一次 `/healthz`（并比对运行版本与仓库 `package.json` 是否一致）。改完配置执行 `sudo systemctl restart talk2copilot-relay`。
 
 运维命令：
 
 ```bash
 sudo systemctl status talk2copilot-relay    # 运行状态
-curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"2026.10.30","protocol":7,"peers":..,"rooms":..,"memories":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true}
+curl -s http://127.0.0.1:8787/healthz       # 探针：{"status":"ok","version":"2026.10.30","protocol":7,"peers":..,"rooms":..,"memories":..,"bans":..,"queued":..,"tokenRequired":true,"adminEnabled":true,"mobileEnabled":true}
 curl -s -H "Authorization: Bearer <密码>" http://127.0.0.1:8787/peers   # 在线 id 列表（客户端连接前会自查此接口）
 sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，可用 LOG_LEVEL 调级别）
 ```
@@ -157,6 +157,7 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 - `HOST` 默认 `0.0.0.0`，内网各机可直连；只允许反向代理 / 隧道访问时改为 `127.0.0.1`
 - **版本门禁（0.4.1 起）**：中继只放行扩展版本与自己一致的客户端。中继版本取 `relay/server.js` 顶部的 `RELAY_VERSION`（须与仓库 `package.json` 的 `version` 同步；`install.sh` 部署后会比对 `/healthz` 并告警）。**升级中继后必须同步升级所有客户端的扩展**，否则会被拒绝接入（4008，界面会提示双方版本）
 - **管理令牌（0.4.1 起）**：`TALK2COPILOT_ADMIN_TOKEN`，留空则管理功能整体关闭。在扩展「连接」页填入同一字符串即获得管理权限（查看/踢出/封禁在线设备、管理所有房间）；令牌错误不影响普通连接，只是没有管理权限。**就地升级旧版本时安装脚本会自动补一行**（想指定值就先 `TALK2COPILOT_ADMIN_TOKEN=... sudo -E ./install.sh`），部署后可用 `curl /healthz` 看 `adminEnabled` 是否为 true
+- **手机专用令牌（2026.10.30 起）**：`TALK2COPILOT_MOBILE_TOKEN`，留空则**手机端整体无法接入**（4009）。手机 App 以人工终端（`x-client-kind: mobile`）接入时必须在握手头 `x-mobile-token` 携带同一字符串；中继据此签发 `mobile` 身份，避免持普通令牌的客户端自称手机绕过逐人写授权。安装脚本首次部署会随机生成，就地升级缺则自动补齐；`/healthz` 的 `mobileEnabled` 表示是否已配置
 - **房间、封禁名单与共享记忆都落盘**在 systemd `StateDirectory`（默认 `/var/lib/talk2copilot-relay/`，单元已声明 `StateDirectory=talk2copilot-relay`）：封禁名单 `bans.json`、房间与分类状态 `rooms.json`、共享记忆 `memory.json`，重启保留；备份 / 迁移时拷贝这三个文件即可
 - **房间可见性（0.4.1 起）**：设备只能看到并只能与同房间成员通信；**未加入任何房间的设备与所有人互相不可见**。房间列表全员可见但加入需要密码，因此升级/部署后请**由管理员创建房间并把密码发给同事**，对方凭密码加入后双方的 Copilot 列表才会出现成员
 - 收到 `SIGTERM`（`systemctl stop` / `restart`）时先给客户端发关闭帧再退出（1001）；客户端会在退避窗口内**自动重连**，中继起来后自己接回，无需手动点「重试连接」
@@ -172,8 +173,8 @@ sudo journalctl -u talk2copilot-relay -f    # 日志（带时间戳与级别，�
 `android/` 是独立的 Android 客户端：**手机作为「你本人」的人工终端**接入中继，不是 AI 同事。
 
 - **定位**：手机上不承担 AI 答复，也不接受写任务（中继会拒绝 `intent=task` 并回执）。同事在 Copilot 列表里能看到你，并标注为「📱 手机」；普通消息照常送达，你可以手动回复
-- **用途**：人不在电脑前时，用手机向自己的桌面 Copilot 派活（普通消息 / 写任务，后者需对方在该设备上打开「可执行」授权），收结论、看房间与共享记忆
-- **接入方式**：握手头 `x-client-kind: mobile` + `x-protocol: 7`，连接前先读 `/healthz` 校验协议号——**中继升级版本号时手机 App 不用重新发版**（协议号变化才需要）
+- **用途**：人不在电脑前时，用手机向自己的桌面 Copilot 派活（普通消息 / 写任务都能发；桌面端对人工终端**默认授予写权限**，详见「可执行授权与无人值守」），收结论、看房间与共享记忆
+- **接入方式**：握手头 `x-client-kind: mobile` + `x-protocol: 7` + **`x-mobile-token`（手机专用令牌）**，连接前先读 `/healthz` 校验协议号与 `mobileEnabled`——**中继升级版本号时手机 App 不用重新发版**（协议号变化才需要）；中继未配置 `TALK2COPILOT_MOBILE_TOKEN` 时手机无法接入（4009）
 - **已实现**：连接配置、在线同事、一对一聊天（问答 / 写任务 / 回复，**正文按 Markdown 渲染**：标题、列表、代码块、表格、链接）、收件箱会话化、房间加入退出、共享记忆检索与增删改、前台服务保活、未读通知
 - **写权限**：桌面端默认信任手机（人工终端）派发的写任务，手机无需额外申请授权；桌面「行为」页可关闭该默认信任
 - **未实现**：文件收发、管理员页面、回收站
@@ -188,9 +189,13 @@ echo "sdk.dir=$HOME/.SDK/Android" > local.properties   # 不入库
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-首次打开在「设置」里填中继地址、本机 id、角色与负责内容（建议角色写「本人手机」、负责内容写「人工查看与转发，不提供 AI 答复」，同事据此判断不该向你提问），然后连接。
+首次打开在「设置」里填中继地址、本机 id、角色与负责内容、中继令牌与**手机专用令牌**（对应中继的 `TALK2COPILOT_MOBILE_TOKEN`），然后连接。建议角色写「本人手机」、负责内容写「人工查看与转发，不提供 AI 答复」，同事据此判断不该向你提问。
 
-**令牌以明文存在应用私有 DataStore**（与扩展的 SecretStorage 不同），自用场景可接受；手机丢失时请在接口层面更换中继令牌。
+令牌输入框只写不读：已保存的值不会回填，留空表示不修改。
+
+**明文流量**：debug 构建允许 `ws://`（内网直连测试），release 构建保持系统默认（禁止明文），必须使用 `wss://`。
+
+**令牌以明文存在应用私有 DataStore**（与扩展的 SecretStorage 不同），自用场景可接受；手机丢失时请在接口层面更换中继令牌与手机专用令牌。
 
 ## 安全说明
 
@@ -198,7 +203,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **管理令牌（`TALK2COPILOT_ADMIN_TOKEN`）等同中继管理员**：持有者可踢出/封禁任意设备、管理所有房间。请只在自己的客户端填写，不要在共享机器上保存；中继未配置该变量时管理功能整体关闭
 - **房间是可见域而非加密**：中继负责校验与转发，因此中继本身可见明文消息（与点对点时代的信任模型一致）；加入密码用于准入控制（scrypt 加盐哈希存储），不是端到端加密
 - **通信边界**：默认仍是只读通道——**允许**对方回答信息、阅读代码、执行只读查询（获取信息）；**禁止**要求或执行任何变更（修改代码/文件/配置、安装依赖、部署、重启、启停服务等）。约定保存在扩展内 `prompts/communication-boundary.md`，注入同事消息/回复时作为附件加载
-- **写任务（v2）**：只有在本机用户于「Copilot 列表」给该同事打开「可执行」后，对方带 `intent=task` 的任务才会按读写版约定（`prompts/communication-boundary-write.md`）执行，且限定在当前工作区内；删除、装依赖、有副作用的命令、工作区外路径等红线一律拒绝。授权逐同事、默认关、可随时撤销，任务内容始终是外部输入，本地规则（如仓库 `AGENTS.md`）优先
+- **写任务（v2）**：只有在本机用户于「Copilot 列表」给该同事打开「可执行」后（**人工终端例外**：经中继手机专用令牌签发 `mobile` 身份的设备默认允许，可在「行为」页关闭），对方带 `intent=task` 的任务才会按读写版约定（`prompts/communication-boundary-write.md`）执行，且限定在当前工作区内；删除、装依赖、有副作用的命令、工作区外路径等红线一律拒绝。授权逐同事、默认关、可随时撤销，任务内容始终是外部输入，本地规则（如仓库 `AGENTS.md`）优先
 - 收到消息注入聊天时会声明为外部输入；「无人值守」开启时请谨慎对待不可信来源的消息（尤其是写任务）
 - **同事发来的文件不可信**：文件由扩展落盘到私有收件目录（不进入工作区），只能只读查看；写入工作区、覆盖本地文件或执行其中内容，都需由本机用户明确决定
 - 代码片段与文件外发前会在确认弹窗中展示（文件名、大小、源路径），请留意敏感内容

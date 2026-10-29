@@ -5,6 +5,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,11 +40,35 @@ class HistoryStore(context: Context) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    private val loadMutex = Mutex()
+    @Volatile
+    private var loaded = false
+
     companion object {
         private const val LIMIT = 500
     }
 
-    suspend fun load() = withContext(Dispatchers.IO) {
+    /**
+     * 只从文件加载一次。前台服务与界面都会触发初始化，若各自 load 一次会互相覆盖：
+     * 先到的消息被后一次 load 用文件内容盖掉，表现为「早期消息丢失」。
+     */
+    suspend fun ensureLoaded() {
+        if (loaded) {
+            return
+        }
+        loadMutex.withLock {
+            if (loaded) {
+                return
+            }
+            loadInternal()
+            loaded = true
+        }
+    }
+
+    /** 兼容旧调用点：等价于 ensureLoaded */
+    suspend fun load() = ensureLoaded()
+
+    private suspend fun loadInternal() = withContext(Dispatchers.IO) {
         val list = runCatching {
             if (!file.exists()) return@runCatching emptyList()
             val arr = JSONArray(file.readText())
@@ -69,11 +95,17 @@ class HistoryStore(context: Context) {
     }
 
     suspend fun append(message: ChatMessage) {
+        ensureLoaded()
+        // 事件流有 replay：同一条消息可能被重复投递，按 id 去重
+        if (_messages.value.any { it.id == message.id }) {
+            return
+        }
         _messages.value = (_messages.value + message).takeLast(LIMIT)
         persist()
     }
 
     suspend fun markDone(id: String) {
+        ensureLoaded()
         val next = _messages.value.map { if (it.id == id) it.copy(done = true, queued = false) else it }
         if (next != _messages.value) {
             _messages.value = next
@@ -83,6 +115,7 @@ class HistoryStore(context: Context) {
 
     /** 打开某个会话时调用：把该同事的入站消息全部标记为已读并落盘（重启后不再重复红点） */
     suspend fun markPeerRead(peerId: String) {
+        ensureLoaded()
         val next = _messages.value.map {
             if (it.peerId == peerId && it.direction == "in" && !it.read) it.copy(read = true) else it
         }
@@ -117,7 +150,11 @@ class HistoryStore(context: Context) {
             }
             val tmp = File(file.parentFile, "history.json.tmp")
             tmp.writeText(arr.toString())
-            tmp.renameTo(file)
+            if (!tmp.renameTo(file)) {
+                // renameTo 在部分文件系统上会失败：忽略返回值曾导致落盘静默丢失
+                file.writeText(arr.toString())
+                tmp.delete()
+            }
         }
     }
 }
