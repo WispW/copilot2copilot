@@ -72,8 +72,9 @@ fun C2CApp(vm: C2CViewModel = viewModel(), initialPeer: String? = null) {
         }
     }
 
-    // 进入会话或在会话内收到新消息时标记已读（已读状态随历史落盘，重启后不再红点）
+    // 进入会话或在会话内收到新消息时标记已读；同时把当前会话告诉常驻消费者（不弹通知）
     LaunchedEffect(chatPeer, state.messages.size) {
+        vm.setActivePeer(chatPeer)
         chatPeer?.let { vm.markRead(it) }
     }
 

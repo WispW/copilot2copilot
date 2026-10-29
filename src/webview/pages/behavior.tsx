@@ -51,7 +51,7 @@ export function BehaviorPage({ snap }: { snap: Snapshot }) {
         </label>
         <Hint>
           手机是以 <code>kind=mobile</code> 接入的人工终端：默认允许它派发写任务（仍受《通信约定（读写版）》的红线约束）。
-          该信任只对**同房间**且以手机类型接入的设备生效；不需要时可在上面关闭。
+          该信任只对<strong>同房间</strong>且以手机类型接入的设备生效；不需要时可在上面关闭。
         </Hint>
       </Section>
 

@@ -85,11 +85,17 @@ if [[ -f "$ENV_FILE" ]]; then
     printf '\n# 管理令牌（安装脚本在升级时自动补充）：在扩展「连接 → 中继管理令牌」填入同一字符串\nTALK2COPILOT_ADMIN_TOKEN=%s\n' "$admin_token" >> "$ENV_FILE"
     echo "已为既有配置补充管理令牌（查看：sudo cat $ENV_FILE）"
   fi
-  # 手机专用令牌：缺失则补一行，否则手机端会被 4009 拒绝（mobileEnabled=false）
-  if ! grep -q '^TALK2COPILOT_MOBILE_TOKEN=' "$ENV_FILE"; then
+  # 手机专用令牌：键缺失或值为空都要补——模板里的空值会让 mobileEnabled=false 且脚本无提示
+  mobile_current="$(grep '^TALK2COPILOT_MOBILE_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  if [[ -z "$mobile_current" ]]; then
     mobile_token="${TALK2COPILOT_MOBILE_TOKEN:-$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)}"
-    printf '\n# 手机专用令牌（安装脚本在升级时自动补充）：在手机 App「设置 → 手机专用令牌」填入同一字符串\nTALK2COPILOT_MOBILE_TOKEN=%s\n' "$mobile_token" >> "$ENV_FILE"
-    echo "已为既有配置补充手机专用令牌（查看：sudo cat $ENV_FILE）"
+    if grep -q '^TALK2COPILOT_MOBILE_TOKEN=' "$ENV_FILE"; then
+      sed -i "s|^TALK2COPILOT_MOBILE_TOKEN=.*|TALK2COPILOT_MOBILE_TOKEN=${mobile_token}|" "$ENV_FILE"
+      echo "已补齐空的手机专用令牌（查看：sudo cat $ENV_FILE）"
+    else
+      printf '\n# 手机专用令牌（安装脚本在升级时自动补充）：在手机 App「设置 → 手机专用令牌」填入同一字符串\nTALK2COPILOT_MOBILE_TOKEN=%s\n' "$mobile_token" >> "$ENV_FILE"
+      echo "已为既有配置补充手机专用令牌（查看：sudo cat $ENV_FILE）"
+    fi
   fi
 else
   umask 077

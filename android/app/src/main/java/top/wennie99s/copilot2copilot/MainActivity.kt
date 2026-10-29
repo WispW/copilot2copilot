@@ -58,11 +58,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        vm.appVisible = true
+        vm.setAppVisible(true)
     }
 
     override fun onPause() {
-        vm.appVisible = false
+        vm.setAppVisible(false)
         super.onPause()
     }
 }

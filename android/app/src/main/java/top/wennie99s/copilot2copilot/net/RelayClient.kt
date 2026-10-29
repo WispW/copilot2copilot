@@ -274,7 +274,9 @@ class RelayClient(private val scope: CoroutineScope) {
     private fun scheduleReconnect(reason: String) {
         if (manualStop || cfg == null) return
         reconnectJob?.cancel()
-        val delayMs = (1L shl min(attempt, 5)) * 1000L + Random.nextLong(0, 600)
+        // 1s → 2 → 4 → 8 → 16 → 30（上限 30s，与界面/文档文案一致），另加 0.6s 内抖动避免同时重连
+        val baseDelaySec = minOf(1L shl min(attempt, 5), 30L)
+        val delayMs = baseDelaySec * 1000L + Random.nextLong(0, 600)
         attempt += 1
         _state.value = _state.value.copy(
             status = ConnStatus.Connecting,

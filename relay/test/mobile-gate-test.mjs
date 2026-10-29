@@ -252,8 +252,87 @@ async function main() {
   [admin, desktop, legacy, phone2].forEach(c => c.close());
 }
 
+/**
+ * 重启与类型覆盖场景（独立状态目录与端口）：
+ *  1. 手机断开后重启中继：离线手机的写任务仍被拒转（mobileIds 已落盘）
+ *  2. 同一 id 改为 extension 接入：不再按人工终端处理，写任务正常投递
+ */
+async function restartScenario() {
+  const port = PORT + 2;
+  const dir = mkdtempSync(join(tmpdir(), 't2c-mobile-restart-'));
+
+  const start = () => {
+    const child = spawn(process.execPath, ['relay/server.js'], {
+      cwd: REPO,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        HOST: '127.0.0.1',
+        TALK2COPILOT_TOKEN: TOKEN,
+        TALK2COPILOT_ADMIN_TOKEN: ADMIN_TOKEN,
+        TALK2COPILOT_MOBILE_TOKEN: MOBILE_TOKEN,
+        STATE_DIRECTORY: dir,
+        LOG_LEVEL: 'warn',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    relays.push(child);
+    return child;
+  };
+  const stop = child => new Promise(resolve => {
+    if (child.exitCode !== null) {
+      resolve();
+      return;
+    }
+    child.once('exit', resolve);
+    child.kill('SIGTERM');
+  });
+
+  let child = start();
+  await waitHealthy(port);
+
+  const admin = connect(port, 'r-admin', { admin: ADMIN_TOKEN });
+  await admin.opened;
+  const created = await admin.control('admin', 'room-create', { name: 'restart-room' });
+  const roomId = created.payload.room.id;
+
+  const phone = connect(port, 'r-phone', { kind: 'mobile', protocol: PROTOCOL, mobileToken: MOBILE_TOKEN });
+  await phone.opened;
+  await phone.control('room', 'join', { roomId });
+  phone.close();
+  await sleep(150);
+
+  // 重启中继（状态目录保留）
+  await stop(child);
+  child = start();
+  await waitHealthy(port);
+
+  const desktop = connect(port, 'r-desktop');
+  await desktop.opened;
+  await desktop.control('room', 'join', { roomId });
+
+  const offlineTaskId = `restart-task-${Date.now()}`;
+  desktop.send({ kind: 'message', id: offlineTaskId, to: 'r-phone', text: '重启后也不应补投', intent: 'task' });
+  await desktop.waitFor(f => f.kind === 'error' && f.refId === offlineTaskId, '重启后 task 拒转');
+  ok('中继重启后：离线手机的写任务仍被拒转（mobileIds 已落盘）');
+
+  // 同一 id 改为 extension 接入：类型按当前连接覆盖
+  const exPhone = connect(port, 'r-phone', { kind: 'extension' });
+  await exPhone.opened;
+  await exPhone.control('room', 'join', { roomId });
+  const extTaskId = `ext-task-${Date.now()}`;
+  desktop.send({ kind: 'message', id: extTaskId, to: 'r-phone', text: '现在应正常投递', intent: 'task' });
+  await exPhone.waitFor(f => f.kind === 'message' && f.id === extTaskId, '改类型后 task 投递');
+  ok('同一 id 改为 extension 接入后：写任务正常投递（类型按当前连接覆盖）');
+
+  [admin, desktop, exPhone].forEach(c => c.close());
+  await stop(child);
+  rmSync(dir, { recursive: true, force: true });
+}
+
 try {
   await main();
+  await restartScenario();
   console.log(`\n手机门禁专项测试：全部 ${passed} 项通过`);
 } catch (err) {
   console.error(`\n测试失败：${err.message}`);

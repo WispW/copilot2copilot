@@ -77,6 +77,9 @@ const ADMIN_TOKEN = process.env.TALK2COPILOT_ADMIN_TOKEN || '';
 const MOBILE_TOKEN = process.env.TALK2COPILOT_MOBILE_TOKEN || '';
 /** 见过并校验通过的手机设备 id：转发写任务时按它拦截，覆盖离线目标（离线时 peers 里查不到） */
 const mobileIds = new Set();
+/** 手机设备集合落盘路径：重启后仍能拦住离线手机的写任务，否则会进队列并在重连时补投 */
+const MOBILE_FILE = process.env.TALK2COPILOT_MOBILE_FILE
+  || path.join(process.env.STATE_DIRECTORY || __dirname, 'mobile-ids.json');
 /** 封禁名单落盘路径：systemd 单元通过 StateDirectory 提供可写目录 */
 const BAN_FILE = process.env.TALK2COPILOT_BAN_FILE
   || path.join(process.env.STATE_DIRECTORY || __dirname, 'bans.json');
@@ -298,6 +301,35 @@ function saveBans() {
     fs.writeFileSync(BAN_FILE, `${JSON.stringify([...banned], null, 2)}\n`);
   } catch (err) {
     log('warn', '封禁名单写入失败（本次仅内存生效，重启会丢失）', { file: BAN_FILE, error: err.message });
+  }
+}
+
+/** 载入手机设备集合（重启后离线手机的写任务仍能被拦截） */
+function loadMobileIds() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(MOBILE_FILE, 'utf8'));
+    if (Array.isArray(raw)) {
+      for (const id of raw) {
+        if (typeof id === 'string' && id) {
+          mobileIds.add(id);
+        }
+      }
+    }
+    log('info', '已载入手机设备集合', { count: mobileIds.size, file: MOBILE_FILE });
+  } catch {
+    // 文件不存在：首次启动的正常路径
+  }
+}
+
+function saveMobileIds() {
+  try {
+    const tmp = `${MOBILE_FILE}.tmp`;
+    fs.writeFileSync(tmp, `${JSON.stringify([...mobileIds], null, 2)}\n`);
+    fs.renameSync(tmp, MOBILE_FILE);
+  } catch (err) {
+    log('warn', '手机设备集合写入失败（本次仅内存生效，重启后离线手机的写任务可能被补投）', {
+      file: MOBILE_FILE, error: err.message,
+    });
   }
 }
 
@@ -1956,9 +1988,14 @@ wss.on('connection', (ws, req) => {
     log('info', '接管同一 id 的残留连接（旧连接已不是 OPEN 状态）', { id });
   }
   peers.set(id, ws);
-  if (mobileVerified) {
-    // 记住该设备是校验过的手机：离线时也按人工终端处理（写任务不暂存）
-    mobileIds.add(id);
+  // 按当前连接的类型覆盖记录：同一 id 改为 extension 接入后，不再按人工终端处理
+  if (mobileVerified !== mobileIds.has(id)) {
+    if (mobileVerified) {
+      mobileIds.add(id);
+    } else {
+      mobileIds.delete(id);
+    }
+    saveMobileIds();
   }
   log('info', `${id} 已上线`, {
     online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', kind: clientKind, admin: ws.isAdmin === true,
@@ -2190,6 +2227,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 loadBans();
 loadState();
 loadMemory();
+loadMobileIds();
 
 server.listen(PORT, HOST, () => {
   log('info', '中继服务已启动', {

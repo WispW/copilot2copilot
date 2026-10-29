@@ -57,18 +57,22 @@ class C2CViewModel(app: Application) : AndroidViewModel(app) {
     private val relay = container.relay
     private val history = container.history
     private val configStore = container.configStore
-    private val notifier = container.notifier
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
-    /** 应用是否在前台、当前正在看的会话（决定是否发系统通知） */
-    @Volatile
-    var appVisible: Boolean = false
-    @Volatile
-    var activePeer: String? = null
+    /** 当前记忆页查看的房间（用于 memory-event 精准刷新） */
     @Volatile
     var memoryRoom: String? = null
+
+    /** 前台状态与当前会话：由 AppContainer 的常驻消费者用于决定是否发通知 */
+    fun setAppVisible(value: Boolean) {
+        container.appVisible = value
+    }
+
+    fun setActivePeer(peerId: String?) {
+        container.activePeer = peerId
+    }
 
     init {
         observe()
@@ -127,47 +131,9 @@ class C2CViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(rooms = env.rooms, categories = env.categories) }
             }
 
-            "message" -> {
-                if (env.from == me()) return
-                val text = env.text ?: ""
-                history.append(
-                    ChatMessage(
-                        id = env.id,
-                        peerId = env.from,
-                        direction = "in",
-                        text = text,
-                        snippet = env.snippet,
-                        intent = env.intent,
-                        ts = env.ts.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                        done = false,
-                        requestId = env.id,
-                        read = false,
-                    ),
-                )
-                if (!appVisible || activePeer != env.from) {
-                    notifier.notifyMessage(env.from, labelOf(env.from), text.preview(120))
-                }
-            }
-
-            "reply" -> {
-                env.requestId?.let { history.markDone(it) }
-                history.append(
-                    ChatMessage(
-                        id = env.id,
-                        peerId = env.from,
-                        direction = "in",
-                        text = env.text ?: "",
-                        snippet = env.snippet,
-                        ts = env.ts.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                        done = true,
-                        requestId = env.requestId,
-                        read = false,
-                    ),
-                )
-                if (!appVisible || activePeer != env.from) {
-                    notifier.notifyMessage(env.from, labelOf(env.from), (env.text ?: "").preview(120))
-                }
-            }
+            // message / reply 的落盘与系统通知由 AppContainer 的常驻消费者处理：
+            // Activity 被销毁而前台服务仍存活时也不会丢消息（这里只维护界面状态）
+            "message", "reply" -> Unit
 
             "error" -> {
                 val reason = env.error ?: "操作被中继拒绝"

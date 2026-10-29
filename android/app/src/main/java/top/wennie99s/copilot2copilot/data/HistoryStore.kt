@@ -94,14 +94,16 @@ class HistoryStore(context: Context) {
         _messages.value = list
     }
 
-    suspend fun append(message: ChatMessage) {
+    /** @return true 表示新增；false 表示同 id 已存在（事件重放时忽略） */
+    suspend fun append(message: ChatMessage): Boolean {
         ensureLoaded()
         // 事件流有 replay：同一条消息可能被重复投递，按 id 去重
         if (_messages.value.any { it.id == message.id }) {
-            return
+            return false
         }
         _messages.value = (_messages.value + message).takeLast(LIMIT)
         persist()
+        return true
     }
 
     suspend fun markDone(id: String) {
