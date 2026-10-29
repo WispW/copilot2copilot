@@ -7,3 +7,7 @@ local.properties
 .idea/
 .sdk/
 captures/
+
+# 发布签名：不入库。丢失后无法覆盖升级已安装的 APK，请自行备份
+keystore.properties
+app/keystore/
