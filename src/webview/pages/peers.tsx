@@ -33,21 +33,29 @@ export function PeersPage({ snap, onGoto }: { snap: Snapshot; onGoto(tab: TabId)
       {rows.map(c => {
         const disabled = c.enabled === false;
         const profileReady = Boolean(c.role && c.scope);
+        const isMobile = c.kind === 'mobile';
+        const isDsh = c.kind === 'dsh';
         return (
           <div key={c.id} class={disabled ? 'peer disabled' : 'peer'}>
             <div class="peer-head">
               <b>{c.id}</b>
+              {isMobile && <span class="badge" title="人工终端：由本人手动收发消息，不承担 AI 答复，也不接受写任务">📱 手机</span>}
+              {isDsh && <span class="badge" title="DeepSeek Harness 客户端">DSH</span>}
               <span class={profileReady ? 'badge ok' : 'badge warn'}>{profileReady ? '档案已同步' : '档案未同步'}</span>
               {disabled && <span class="badge">已停用</span>}
               <span class="grow"></span>
-              <label class="row" title="允许该同事要求本机 Copilot 执行写操作（工作区内文件与测试/构建；删除、装依赖等仍会拒绝）">
-                <input
-                  type="checkbox"
-                  checked={c.allowExec === true}
-                  onChange={e => post({ type: 'toggleExecGrant', peerId: c.id, allow: e.currentTarget.checked })}
-                />
-                可执行
-              </label>
+              {isMobile ? (
+                <span class="badge" title="人工终端（你本人的手机）默认允许派发写任务，可在「行为」页关闭默认信任">写权限：默认</span>
+              ) : (
+                <label class="row" title="允许该同事要求本机 Copilot 执行写操作（工作区内文件与测试/构建；删除、装依赖等仍会拒绝）">
+                  <input
+                    type="checkbox"
+                    checked={c.allowExec === true}
+                    onChange={e => post({ type: 'toggleExecGrant', peerId: c.id, allow: e.currentTarget.checked })}
+                  />
+                  可执行
+                </label>
+              )}
               <button
                 class={disabled ? 'small accent' : 'small danger'}
                 title="停用后不参与通信，也不会出现在模型可见名单里"

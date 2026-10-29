@@ -36,7 +36,7 @@ const relay = createServer((req, res) => {
   if (req.url.startsWith('/healthz')) {
     const answer = () => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', version: '2026.10.26', protocol: 6 }));
+      res.end(JSON.stringify({ status: 'ok', version: '2026.10.30', protocol: 7 }));
     };
     if (healthzDelay > 0) setTimeout(answer, healthzDelay);
     else answer();

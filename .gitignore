@@ -17,3 +17,4 @@ docs/
 
 # Copilot2Copilot DSH 本地令牌（不入库）
 dsh/.token
+.test-relay-state/

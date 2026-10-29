@@ -1,0 +1,9 @@
+# Android 构建产物与本地环境（SDK / Gradle / IDE）
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+.idea/
+.sdk/
+captures/

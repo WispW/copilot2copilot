@@ -56,11 +56,13 @@ const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info').toLowerCase();
 
 /** 中继版本：必须与仓库 package.json 的 version 同步（发版时一起改；install.sh 会比对 /healthz 告警） */
-const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.26';
+const RELAY_VERSION = process.env.TALK2COPILOT_RELAY_VERSION || '2026.10.30';
 /** 协议号：与扩展 src/protocol.ts 的 PROTOCOL_VERSION 对应，仅供探针展示 */
+// 协议 7：新增客户端类型（握手头 x-client-kind）——标注设备类型、拒绝对人工终端派发写任务，
+//        非扩展客户端改按协议号门禁（x-protocol），中继升级版本时手机端无需跟着发版
 // 协议 6：记忆严格按房间隔离，并新增 memory-event（中继在记忆变更后向房间成员下发通知）
 // 协议 5：新增信任授权通道（成员上报"我授权谁对我执行写操作"，中继下发"我被谁授权"）
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 /** 管理令牌：为空时管理功能整体不可用（不给任何人管理权限） */
 const ADMIN_TOKEN = process.env.TALK2COPILOT_ADMIN_TOKEN || '';
 /** 封禁名单落盘路径：systemd 单元通过 StateDirectory 提供可写目录 */
@@ -251,6 +253,16 @@ function timingSafeEqualStr(given, expected) {
 /** 版本号归一化：忽略 -testN / -testN.M 后缀，测试包与正式包视为同一版本 */
 function normalizeVersion(value) {
   return String(value || '').trim().replace(/-test[\d.]+$/i, '');
+}
+
+/**
+ * 客户端类型（握手头 x-client-kind）：未知/缺省一律按 extension 处理，
+ * 这样旧客户端与拼错头的客户端仍走版本号门禁，不会被意外放宽。
+ */
+const CLIENT_KINDS = new Set(['extension', 'dsh', 'mobile']);
+function normalizeClientKind(value) {
+  const kind = String(value || '').trim().toLowerCase();
+  return CLIENT_KINDS.has(kind) ? kind : 'extension';
 }
 
 function loadBans() {
@@ -1348,6 +1360,7 @@ function handleAdminOp(ws, id, env) {
       const devices = [...peers.entries()].map(([peerId, peerWs]) => ({
         id: peerId,
         version: peerWs.clientVersion || '(未上报)',
+        kind: peerWs.clientKind || 'extension',
         admin: peerWs.isAdmin === true,
         roomIds: [...rooms.values()].filter(room => room.members.has(peerId)).map(room => room.id),
       }));
@@ -1842,6 +1855,8 @@ wss.on('connection', (ws, req) => {
   const id = url.searchParams.get('id') || '';
   const auth = req.headers.authorization || '';
   const clientVersion = String(req.headers['x-client-version'] || '');
+  const clientKind = normalizeClientKind(req.headers['x-client-kind']);
+  const clientProtocol = Number.parseInt(String(req.headers['x-protocol'] || ''), 10);
   const adminHeader = String(req.headers['x-admin-token'] || '');
   // 诊断用：真实客户端 IP（隧道后面 socket 对端永远是 127.0.0.1）、id 与连接建立时间
   ws.clientIp = clientIpOf(req);
@@ -1853,12 +1868,22 @@ wss.on('connection', (ws, req) => {
     ws.close(4001, 'unauthorized');
     return;
   }
-  // 版本门禁：扩展必须与中继同步升级（-testN / -testN.M 后缀忽略），否则拒绝接入
-  if (normalizeVersion(clientVersion) !== normalizeVersion(RELAY_VERSION)) {
-    log('warn', '拒绝连接：扩展版本与中继不一致', {
-      id, relayVersion: RELAY_VERSION, clientVersion: clientVersion || '(未上报)', ip: ws.clientIp,
+  // 接入门禁：
+  // - extension / dsh：版本号必须与中继一致（-testN / -testN.M 后缀忽略），双方同步升级
+  // - mobile 等第三方客户端：改按协议号（x-protocol）门禁，中继升级版本号时客户端无需重发
+  if (clientKind === 'extension' || clientKind === 'dsh') {
+    if (normalizeVersion(clientVersion) !== normalizeVersion(RELAY_VERSION)) {
+      log('warn', '拒绝连接：扩展版本与中继不一致', {
+        id, kind: clientKind, relayVersion: RELAY_VERSION, clientVersion: clientVersion || '(未上报)', ip: ws.clientIp,
+      });
+      ws.close(4008, `version mismatch: relay ${RELAY_VERSION}`);
+      return;
+    }
+  } else if (clientProtocol !== PROTOCOL) {
+    log('warn', '拒绝连接：客户端协议号与中继不一致', {
+      id, kind: clientKind, relayProtocol: PROTOCOL, clientProtocol: Number.isNaN(clientProtocol) ? '(未上报)' : clientProtocol, ip: ws.clientIp,
     });
-    ws.close(4008, `version mismatch: relay ${RELAY_VERSION}`);
+    ws.close(4008, `protocol mismatch: relay ${PROTOCOL}`);
     return;
   }
   if (!id) {
@@ -1879,6 +1904,7 @@ wss.on('connection', (ws, req) => {
   }
   // 管理令牌：错误不影响普通连接，只是该连接不具备管理权限
   ws.clientVersion = clientVersion;
+  ws.clientKind = clientKind;
   ws.isAdmin = ADMIN_TOKEN !== '' && adminHeader !== '' && timingSafeEqualStr(adminHeader, ADMIN_TOKEN);
 
   const previous = peers.get(id);
@@ -1901,7 +1927,7 @@ wss.on('connection', (ws, req) => {
   }
   peers.set(id, ws);
   log('info', `${id} 已上线`, {
-    online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', admin: ws.isAdmin === true,
+    online: peers.size, ip: ws.clientIp, version: clientVersion || '(未上报)', kind: clientKind, admin: ws.isAdmin === true,
   });
   broadcastTrustState();
 
@@ -1951,11 +1977,13 @@ wss.on('connection', (ws, req) => {
       if (env.profile && typeof env.profile === 'object') {
         const role = (typeof env.profile.role === 'string' ? env.profile.role : '').slice(0, 200);
         const scope = (typeof env.profile.scope === 'string' ? env.profile.scope : '').slice(0, 200);
+        // 设备类型以连接握手为准（客户端自报的 profile.kind 不可信，防止冒充人工终端逃避任务拦截）
+        const kind = ws.clientKind || 'extension';
         const previous = profiles.get(id);
         // 值未变化就不广播，避免客户端重复上报把全量目录刷爆
-        if (!previous || previous.role !== role || previous.scope !== scope) {
-          profiles.set(id, { id, role, scope });
-          log('info', `${id} 已上报档案`, { roleChars: role.length, scopeChars: scope.length, total: profiles.size });
+        if (!previous || previous.role !== role || previous.scope !== scope || previous.kind !== kind) {
+          profiles.set(id, { id, role, scope, kind });
+          log('info', `${id} 已上报档案`, { roleChars: role.length, scopeChars: scope.length, kind, total: profiles.size });
           broadcastPresence();
         }
       }
@@ -1983,6 +2011,24 @@ wss.on('connection', (ws, req) => {
         });
       }
       return;
+    }
+    // 人工终端（手机）不接受写任务：拒转 intent=task 并向发送方回执；普通消息照常投递（人可以看到并人工回复）
+    if (env.kind === 'message' && env.intent === 'task') {
+      const targetWs = peers.get(env.to);
+      if (targetWs && targetWs.clientKind === 'mobile') {
+        log('info', '拒绝转发：目标是人工终端，不接受写任务', { from: id, to: env.to });
+        send(ws, {
+          v: 1,
+          kind: 'error',
+          id: `err-${++seq}`,
+          from: 'server',
+          to: id,
+          ts: Date.now(),
+          refId: typeof env.id === 'string' ? env.id : '',
+          error: `${env.to} 是人工终端（手机），不接受写任务；请改为只问信息，或把要改的内容交给对方本人。`,
+        });
+        return;
+      }
     }
     // 身份绑定：from 一律改写为连接的真实 id，并丢弃客户端自带的档案——
     // 否则同房间成员可冒充他人（用对方 id 发消息、伪造角色）投递；档案以本连接经 to='server' 上报的为准

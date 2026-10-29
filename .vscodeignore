@@ -11,6 +11,7 @@ publish.sh
 AGENTS.md
 # 本地测试中继的环境变量（含测试令牌），绝不能进扩展包
 .test-relay.env
+.test-relay-state/**
 .env
 **/*.map
 # 图标加工用的位图源文件（不打进扩展包）
@@ -19,3 +20,5 @@ AGENTS.md
 docs/**
 # DSH bundle 不属于 VS Code 扩展；其中可能含 .token / node_modules，绝不能进扩展包
 dsh/**
+# Android 客户端是独立工程（Gradle / SDK 缓存），不属于 VS Code 扩展
+android/**

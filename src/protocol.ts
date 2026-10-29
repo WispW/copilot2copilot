@@ -4,12 +4,14 @@
  */
 
 /**
- * 协议版本：v6 记忆严格按房间隔离，中继新增 memory-event 变更下发；
+ * 协议版本：v7 新增客户端类型（extension / dsh / mobile）——中继据此标注设备、
+ * 拒绝对人工终端（mobile）派发写任务，并对非扩展客户端改按协议号门禁；
+ * v6 记忆严格按房间隔离，中继新增 memory-event 变更下发；
  * v5 新增信任授权（成员上报"我授权谁对我执行写操作"，中继下发"我被谁授权"）；
  * v4 新增房间共享记忆（成员 query/remember/update/delete/restore，管理员 memory-*）；
  * v3 起房间由中继管理员统一维护并落盘。中继按扩展版本号做接入门禁（本文件改动时需同步 relay/server.js）
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** 文件通道：单个文件大小上限与分块大小（512 KiB 经 base64 约 683 KiB，低于中继 2 MiB 的单帧上限） */
 export const FILE_MAX_BYTES = 64 * 1024 * 1024;
@@ -22,11 +24,20 @@ export interface FileMeta {
   sha256: string;
 }
 
+/**
+ * 设备类型（握手头 x-client-kind，缺省 extension）：
+ * extension = VS Code 扩展（参与 AI 协作）、dsh = DeepSeek Harness、
+ * mobile = 本人手机（人工终端：可见、可收发消息，但不承担 AI 答复、不接受写任务）。
+ */
+export type ClientKind = 'extension' | 'dsh' | 'mobile';
+
 /** 沟通方档案：角色 / 负责内容，用于双方 Copilot 相互理解 */
 export interface ColleagueProfile {
   id: string;
   role: string;
   scope: string;
+  /** 设备类型：由中继按连接握手标识下发；历史中继/旧客户端不带，按 extension 处理 */
+  kind?: ClientKind;
 }
 
 /**
@@ -100,6 +111,8 @@ export interface AdminDevice {
   /** 客户端上报的扩展版本（-testN / -testN.M 后缀会被中继忽略，但仍原样记录） */
   version: string;
   admin: boolean;
+  /** 设备类型（中继按握手头 x-client-kind 标注；旧客户端为 extension） */
+  kind?: ClientKind;
   /** 所在房间 id */
   roomIds: string[];
 }

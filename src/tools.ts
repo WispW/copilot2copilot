@@ -237,6 +237,9 @@ export class SendMessageTool implements vscode.LanguageModelTool<SendInput> {
     }
 
     const intent: 'ask' | 'task' = input.intent === 'task' ? 'task' : 'ask';
+    if (intent === 'task' && colleague.kind === 'mobile') {
+      throw new Error(`${colleague.id} 是人工终端（用户本人的手机），不能执行写任务：请改为只问信息，或把要改的内容交给本机处理。`);
+    }
     log(`[tool] send_message → ${colleague.id}（意图=${intent}，等待=${input.wait_seconds ?? 0}s，片段=${input.snippet ? '有' : '无'}）`);
     const env = makeEnvelope({
       kind: 'message',
@@ -577,6 +580,8 @@ export class ListColleaguesTool implements vscode.LanguageModelTool<ListColleagu
         scope: c.scope,
         online: transport?.isOnline(c.id) ?? false,
         profile_ready: store.hasPeerProfile(c),
+        // 设备类型：mobile = 用户本人的手机（人工终端），不能派发写任务、也不应期待 AI 自动回复
+        device_type: c.kind ?? 'extension',
         // 我已获该同事授权（对方用户在其卡片上开了「可执行」）：可以给它派发写任务
         task_authorized: store.getGrantedBy().includes(c.id),
       }));

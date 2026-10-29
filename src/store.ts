@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { AdminDevice, ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
+import { AdminDevice, ClientKind, ColleagueProfile, RoomCategory, RoomSummary } from './protocol';
 import { log } from './logger';
 
 export interface ColleagueConfig {
@@ -11,6 +11,11 @@ export interface ColleagueConfig {
   /** 由中继/对端自动同步，本地只读展示 */
   role: string;
   scope: string;
+  /**
+   * 设备类型（中继下发）：extension=VS Code 扩展、dsh=DeepSeek Harness、mobile=本人手机（人工终端）。
+   * 历史条目没有该字段，按 extension 处理。
+   */
+  kind?: ClientKind;
   /** 中继上的路由 id（自动登记时等于 id；保留该字段以兼容历史配置） */
   relayPeerId: string;
   /** 允许该同事对我执行写操作（本地显式授权，默认关；变更后上报中继） */
@@ -74,6 +79,11 @@ export interface AppConfig {
     unattended?: boolean;
     /** 写任务开始 / 结束时是否发系统通知（默认开；静音只影响通知，留痕不受影响） */
     notify?: boolean;
+    /**
+     * 默认信任人工终端（kind=mobile，即用户本人的手机）派发的写任务，无需逐人打开「可执行」。
+     * 默认开；关闭后与普通同事一致，需要显式授权。
+     */
+    trustMobileWrite?: boolean;
   };
   colleagues: ColleagueConfig[];
 }
@@ -113,7 +123,7 @@ function defaultConfig(): AppConfig {
     identity: { id: user, role: '', scope: '' },
     relay: { url: '', autoConnect: true },
     relays: [],
-    behavior: { waitTimeoutSec: 90, historyLimit: 200, unattended: false, notify: true },
+    behavior: { waitTimeoutSec: 90, historyLimit: 200, unattended: false, notify: true, trustMobileWrite: true },
     colleagues: [],
   };
 }
@@ -142,12 +152,15 @@ function normalize(raw: Partial<AppConfig>): AppConfig {
       // 显式布尔化，容忍旧配置缺少该字段
       unattended: raw.behavior?.unattended === true,
       notify: raw.behavior?.notify !== false,
+      // 人工终端默认信任写任务：缺省视为开启（用户本人手机）
+      trustMobileWrite: raw.behavior?.trustMobileWrite !== false,
     },
     colleagues: Array.isArray(raw.colleagues)
       ? raw.colleagues.map(c => ({
         id: String(c?.id ?? ''),
         role: String(c?.role ?? ''),
         scope: String(c?.scope ?? ''),
+        ...(c?.kind === 'mobile' || c?.kind === 'dsh' ? { kind: c.kind } : {}),
         relayPeerId: String(c?.relayPeerId ?? ''),
         allowExec: c?.allowExec === true,
         enabled: c?.enabled !== false,
@@ -328,15 +341,15 @@ export class Store {
   async applyPeerProfile(profile: ColleagueProfile, peerId: string): Promise<boolean> {
     const idx = this.cfg.colleagues.findIndex(c => c.id === peerId || c.relayPeerId === peerId);
     if (idx < 0) {
-      this.cfg.colleagues.push({ id: peerId, role: profile.role, scope: profile.scope, relayPeerId: peerId });
+      this.cfg.colleagues.push({ id: peerId, role: profile.role, scope: profile.scope, relayPeerId: peerId, ...(profile.kind ? { kind: profile.kind } : {}) });
       await this.updateConfig(this.cfg);
       return true;
     }
     const c = this.cfg.colleagues[idx];
-    if (c.role === profile.role && c.scope === profile.scope) {
+    if (c.role === profile.role && c.scope === profile.scope && c.kind === profile.kind) {
       return false;
     }
-    this.cfg.colleagues[idx] = { ...c, role: profile.role, scope: profile.scope };
+    this.cfg.colleagues[idx] = { ...c, role: profile.role, scope: profile.scope, ...(profile.kind ? { kind: profile.kind } : {}) };
     await this.updateConfig(this.cfg);
     return true;
   }
@@ -393,19 +406,21 @@ export class Store {
       }
       const role = (typeof profile.role === 'string' ? profile.role : '').slice(0, 200);
       const scope = (typeof profile.scope === 'string' ? profile.scope : '').slice(0, 200);
+      // 旧中继不下发 kind：保持本地已有值，不要被清空
+      const kind = profile.kind;
       const idx = this.cfg.colleagues.findIndex(c => c.id === id || c.relayPeerId === id);
       if (idx < 0) {
-        this.cfg.colleagues.push({ id, role, scope, relayPeerId: id, enabled: true });
+        this.cfg.colleagues.push({ id, role, scope, relayPeerId: id, enabled: true, ...(kind ? { kind } : {}) });
         changed = true;
         continue;
       }
       const c = this.cfg.colleagues[idx];
       // 目录以 id 为准：顺手把历史脏值（relayPeerId 与 id 不一致）归一到 id——
       // 该字段在界面上已不可编辑，不归一的话这类条目会永远被判离线
-      if (c.role === role && c.scope === scope && c.relayPeerId === id) {
+      if (c.role === role && c.scope === scope && c.relayPeerId === id && c.kind === kind) {
         continue;
       }
-      this.cfg.colleagues[idx] = { ...c, role, scope, relayPeerId: id };
+      this.cfg.colleagues[idx] = { ...c, role, scope, relayPeerId: id, ...(kind ? { kind } : {}) };
       changed = true;
     }
     if (changed) {
@@ -421,6 +436,27 @@ export class Store {
       return;
     }
     this.cfg.colleagues[idx] = { ...this.cfg.colleagues[idx], enabled };
+    await this.updateConfig(this.cfg);
+  }
+
+  /**
+   * 该同事派来的写任务是否应执行：显式授权，或对方是人工终端（手机）且默认信任开启。
+   * 人工终端即用户本人设备，默认获得写权限；可见性由中继的房间校验保证（只能收到同房间设备的消息）。
+   */
+  canExecFrom(colleague: ColleagueConfig | undefined): boolean {
+    if (!colleague) {
+      return false;
+    }
+    return colleague.allowExec === true
+      || (this.cfg.behavior.trustMobileWrite !== false && colleague.kind === 'mobile');
+  }
+
+  /** 默认信任人工终端写任务（手机）：关闭后手机与普通同事一致，需要逐人授权 */
+  async setTrustMobileWrite(value: boolean): Promise<void> {
+    if ((this.cfg.behavior.trustMobileWrite !== false) === value) {
+      return;
+    }
+    this.cfg.behavior = { ...this.cfg.behavior, trustMobileWrite: value };
     await this.updateConfig(this.cfg);
   }
 

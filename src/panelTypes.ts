@@ -112,6 +112,7 @@ export type WebviewMessage =
   | { type: 'cancelAllExecGrants' }
   | { type: 'manualInject'; id: string }
   | { type: 'setNotify'; value: boolean }
+  | { type: 'setTrustMobileWrite'; value: boolean }
   | { type: 'useRelay'; url: string }
   | { type: 'forgetRelay'; url: string }
   | { type: 'cancelSend'; id: string }

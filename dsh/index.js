@@ -32,7 +32,7 @@ import { WebSocket } from 'ws';
 export const name = 'copilot2copilot-dsh';
 export const inject = ['tools', 'webServer'];
 
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
 const MAX_INBOX = 200;
 /** Close codes that a reconnect cannot fix: bad token, no id, reserved id, id taken, kicked, banned, version gate. */
 const FATAL_CLOSE_CODES = new Set([4001, 4002, 4003, 4005, 4006, 4007, 4008]);
@@ -1011,6 +1011,8 @@ export function apply(ctx, config = {}) {
 
       const wsUrl = `${cfg.relayUrl.replace(/\/+$/, '')}/ws?id=${encodeURIComponent(cfg.id)}`;
       const headers = {};
+      // 设备类型：中继据此标注设备、拒绝对人工终端派发写任务（缺省视为 extension）
+      headers['x-client-kind'] = 'dsh';
       const clientVersion = cfg.clientVersion || pluginVersion();
       if (clientVersion) headers['x-client-version'] = clientVersion;
       const token = resolveToken();
