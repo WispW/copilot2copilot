@@ -12,7 +12,7 @@ object C2C {
     const val CLIENT_KIND = "mobile"
 
     /** App 版本（仅供中继管理页展示，不参与门禁；协议号决定兼容性） */
-    const val APP_VERSION = "0.1.0"
+    const val APP_VERSION = "2026.10.30"
 }
 
 data class Profile(
