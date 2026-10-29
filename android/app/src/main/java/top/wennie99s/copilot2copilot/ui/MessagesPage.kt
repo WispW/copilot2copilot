@@ -110,7 +110,8 @@ fun ChatScreen(vm: C2CViewModel, peerId: String, onBack: () -> Unit, modifier: M
             }
             input = ""
             replyTo = null
-            asTask = false
+            // 保持「写任务 / 问信息」的选择：发送后自动复位容易让人以为仍在写任务模式下
+            // 结果发出去的是只读消息（气泡上有「写任务」标记，误发也能一眼看出）
         }
     }
 

@@ -209,6 +209,11 @@ export class Injector {
     const fromMobile = fromColleague?.kind === 'mobile';
     const authorized = this.store.canExecFrom(fromColleague);
     const canExecute = isTask && authorized;
+    // 授权判定留痕：排查「明明授权了却没执行」时看这一行
+    log(
+      `[inject] 授权判定：isTask=${isTask} fromMobile=${fromMobile} authorized=${authorized} canExecute=${canExecute}` +
+        `（trustMobileWrite=${this.store.config.behavior.trustMobileWrite !== false}，kind=${fromColleague?.kind ?? '(未知)'}）`,
+    );
     const prompt = [
       isTask
         ? `[同事任务] 来自 ${this.profileLine(env.from)}，request_id = ${env.id}：请求本机执行一项写操作。`
