@@ -285,3 +285,7 @@ node dsh/dev/fake-peer.mjs alice                # 冒充一个同事，收到消
 - 文件传输要求双方同时在线：对端离线时不会排队补发。
 - 版本门禁由握手头决定：插件建立 WebSocket 时在 `x-client-version` 上报自身版本，中继拿它与 `RELAY_VERSION` 精确比对，不一致直接以 4008 拒绝接入。`/healthz` 只用于本地校验协议号与展示版本，**不会自动对齐版本**——升级中继后必须同步升级插件。
 - `/copilot2copilot/state` 由 Harness Web 服务提供，访问权限跟随 Harness 本身；不要把 Harness Web 服务暴露到不可信网络。
+
+## 更改日志
+
+各版本的新增、变更与修复见 [CHANGELOG.md](./CHANGELOG.md)。
